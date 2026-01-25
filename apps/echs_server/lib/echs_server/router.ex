@@ -27,6 +27,7 @@ defmodule EchsServer.Router do
 
   post "/v1/threads" do
     params = conn.body_params || %{}
+    tools = Map.get(params, "tools")
 
     opts =
       []
@@ -36,10 +37,13 @@ defmodule EchsServer.Router do
       |> maybe_put_kw(:reasoning, params["reasoning"])
       |> maybe_put_kw(:instructions, params["instructions"])
       |> maybe_put_kw(:coordination_mode, parse_coordination(params["coordination_mode"]))
-      |> maybe_put_kw(:tools, normalize_tools(params["tools"]))
 
     case EchsCore.create_thread(opts) do
       {:ok, thread_id} ->
+        if tools != nil do
+          :ok = EchsCore.configure_thread(thread_id, %{"tools" => tools})
+        end
+
         JSON.send_json(conn, 201, %{thread_id: thread_id})
 
       {:error, reason} ->
@@ -224,10 +228,6 @@ defmodule EchsServer.Router do
   defp parse_coordination("blackboard"), do: :blackboard
   defp parse_coordination("peer"), do: :peer
   defp parse_coordination(_), do: nil
-
-  defp normalize_tools(nil), do: nil
-  defp normalize_tools(list) when is_list(list), do: list
-  defp normalize_tools(_), do: nil
 
   defp normalize_config(config) when is_map(config), do: stringify_keys(config)
   defp normalize_config(_), do: %{}
