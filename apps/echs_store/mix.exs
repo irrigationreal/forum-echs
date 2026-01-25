@@ -1,9 +1,9 @@
-defmodule EchsCore.MixProject do
+defmodule EchsStore.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :echs_core,
+      app: :echs_store,
       version: "0.1.0",
       build_path: "../../_build",
       config_path: "../../config/config.exs",
@@ -15,19 +15,20 @@ defmodule EchsCore.MixProject do
     ]
   end
 
+  # Run "mix help compile.app" to learn about applications.
   def application do
     [
       extra_applications: [:logger],
-      mod: {EchsCore.Application, []}
+      mod: {EchsStore.Application, []}
     ]
   end
 
+  # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:echs_codex, in_umbrella: true},
-      {:echs_store, in_umbrella: true},
       {:jason, "~> 1.4"},
-      {:phoenix_pubsub, "~> 2.1"}
+      {:ecto_sql, "~> 3.12"},
+      {:ecto_sqlite3, "~> 0.22"}
     ]
   end
 end

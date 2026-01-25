@@ -169,13 +169,21 @@ defmodule EchsServer.RouterTest do
 
     :sys.replace_state(pid, fn state ->
       history_items = [
-        %{"type" => "message", "role" => "user", "content" => [%{"type" => "input_text", "text" => "a"}]},
+        %{
+          "type" => "message",
+          "role" => "user",
+          "content" => [%{"type" => "input_text", "text" => "a"}]
+        },
         %{
           "type" => "message",
           "role" => "user",
           "content" => [%{"type" => "input_image", "image_url" => "data:image/png;base64,AAAA"}]
         },
-        %{"type" => "message", "role" => "assistant", "content" => [%{"type" => "output_text", "text" => "b"}]}
+        %{
+          "type" => "message",
+          "role" => "assistant",
+          "content" => [%{"type" => "output_text", "text" => "b"}]
+        }
       ]
 
       meta = %{

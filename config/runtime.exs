@@ -23,4 +23,13 @@ if config_env() == :prod do
     end
 
   config :logger, level: level
+
+  db_path = System.get_env("ECHS_DB_PATH") || Path.expand("tmp/echs.db", File.cwd!())
+  pool_size = System.get_env("ECHS_DB_POOL_SIZE") || "5"
+
+  config :echs_store, EchsStore.Repo,
+    database: db_path,
+    pool_size: String.to_integer(pool_size),
+    journal_mode: :wal,
+    synchronous: :normal
 end

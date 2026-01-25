@@ -44,49 +44,15 @@ defmodule EchsCore.Tools.ViewImage do
 
     abs_path = Path.expand(path, cwd)
 
-    with {:ok, %File.Stat{type: :regular, size: size}} <- File.stat(abs_path),
-         :ok <- check_size(size, max_bytes),
-         {:ok, bytes} <- File.read(abs_path) do
-      mime = guess_mime(abs_path)
-      encoded = Base.encode64(bytes)
-
-      image_url = "data:#{mime};base64,#{encoded}"
-
+    with {:ok, meta} <- EchsCore.Uploads.store_file(abs_path, max_bytes: max_bytes) do
       {:ok,
        %{
          "type" => "message",
          "role" => "user",
-         "content" => [%{"type" => "input_image", "image_url" => image_url}]
+         # Store an upload handle in history and expand to `image_url` only when
+         # building the API payload. This keeps persisted history small.
+         "content" => [%{"type" => "input_image", "upload_id" => meta.upload_id}]
        }}
-    else
-      {:ok, %File.Stat{type: other}} ->
-        {:error, {:not_a_file, other}}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp check_size(size, max_bytes) when is_integer(size) and is_integer(max_bytes) do
-    if size <= max_bytes do
-      :ok
-    else
-      {:error, {:too_large, size, max_bytes}}
-    end
-  end
-
-  defp guess_mime(path) do
-    case Path.extname(path) |> String.downcase() do
-      ".png" -> "image/png"
-      ".jpg" -> "image/jpeg"
-      ".jpeg" -> "image/jpeg"
-      ".gif" -> "image/gif"
-      ".webp" -> "image/webp"
-      ".bmp" -> "image/bmp"
-      ".tif" -> "image/tiff"
-      ".tiff" -> "image/tiff"
-      ".svg" -> "image/svg+xml"
-      _ -> "application/octet-stream"
     end
   end
 end

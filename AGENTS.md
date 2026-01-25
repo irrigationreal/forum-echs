@@ -35,7 +35,9 @@ This repo provides:
 - A runtime (`echs_core`) that manages per-thread state + tool execution.
 - A Codex client (`echs_codex`) that handles auth + SSE streaming.
 - A simple CLI (`echs_cli`) for manual local runs.
-- A placeholder protocol app (`echs_protocol`) for future shared schemas.
+- An HTTP daemon (`echs_server`) exposing a wire API (REST + SSE).
+- A persistence layer (`echs_store`) using SQLite (threads/messages/history).
+- A protocol app (`echs_protocol`) for shared schemas (includes OpenAPI today).
 
 ## Repo Layout
 
@@ -45,6 +47,7 @@ apps/
   echs_codex/     Auth + streaming client for the responses endpoints
   echs_cli/       Minimal interactive CLI wired to echs_core + echs_codex
   echs_server/    HTTP daemon (REST + SSE) exposing a wire interface
+  echs_store/     SQLite persistence (threads/messages/history)
   echs_protocol/  Placeholder for future protocol/schema definitions
 config/config.exs Umbrella-wide config (currently minimal)
 blackboard.json   Not used by Elixir code in this repo (may be used externally)
@@ -111,6 +114,7 @@ Important helpers:
 - `:tools` - tool specs to expose (defaults to `default_tools/0`)
 - `:thread_id` - optional explicit ID (otherwise random `thr_<hex>`)
 - `:parent_thread_id` - marks this thread as a child (see blackboard notes)
+- `:coordination_mode` - `:hierarchical` (default), `:blackboard`, or `:peer`
 
 Thread configuration can be hot-swapped via:
 

@@ -250,7 +250,13 @@ defmodule EchsCore.ThreadWorker do
     - `:limit` (default: 200)
   """
   @spec get_history(thread_id(), keyword()) ::
-          {:ok, %{total: non_neg_integer(), offset: non_neg_integer(), limit: non_neg_integer(), items: [map()]}}
+          {:ok,
+           %{
+             total: non_neg_integer(),
+             offset: non_neg_integer(),
+             limit: non_neg_integer(),
+             items: [map()]
+           }}
   def get_history(thread_id, opts \\ []) do
     GenServer.call(via_tuple(thread_id), {:get_history, opts})
   end
@@ -348,6 +354,16 @@ defmodule EchsCore.ThreadWorker do
     cwd = Keyword.get(opts, :cwd, File.cwd!())
     now_ms = now_ms()
 
+    created_at_ms = Keyword.get(opts, :created_at_ms, now_ms)
+    last_activity_at_ms = Keyword.get(opts, :last_activity_at_ms, created_at_ms)
+
+    history_items = Keyword.get(opts, :history_items, [])
+    message_log = Keyword.get(opts, :message_log, %{})
+    message_ids = Keyword.get(opts, :message_ids, Map.keys(message_log))
+
+    queued_turns = Keyword.get(opts, :queued_turns, [])
+    steer_queue = Keyword.get(opts, :steer_queue, [])
+
     # Create thread-local blackboard
     {:ok, blackboard} = Blackboard.start_link([])
 
@@ -360,20 +376,20 @@ defmodule EchsCore.ThreadWorker do
     state = %__MODULE__{
       thread_id: thread_id,
       parent_thread_id: parent_thread_id,
-      created_at_ms: now_ms,
-      last_activity_at_ms: now_ms,
+      created_at_ms: created_at_ms,
+      last_activity_at_ms: last_activity_at_ms,
       model: Keyword.get(opts, :model, "gpt-5.2-codex"),
       reasoning: Keyword.get(opts, :reasoning, "medium"),
       cwd: cwd,
       instructions: build_instructions(Keyword.get(opts, :instructions), cwd),
       tools: Keyword.get(opts, :tools, default_tools()),
-      history_items: [],
+      history_items: history_items,
       status: :idle,
       current_message_id: nil,
       current_turn_started_at_ms: nil,
-      message_ids: [],
-      message_id_set: MapSet.new(),
-      message_log: %{},
+      message_ids: message_ids,
+      message_id_set: MapSet.new(message_ids),
+      message_log: message_log,
       children: %{},
       coordination_mode: Keyword.get(opts, :coordination_mode, :hierarchical),
       blackboard: blackboard,
@@ -382,12 +398,18 @@ defmodule EchsCore.ThreadWorker do
       stream_monitor: nil,
       reply_to: nil,
       pending_interrupts: [],
-      queued_turns: [],
-      steer_queue: [],
+      queued_turns: queued_turns,
+      steer_queue: steer_queue,
       tool_handlers: %{}
     }
 
     broadcast(state, :thread_created, %{thread_id: thread_id, config: config_summary(state)})
+
+    _ = persist_thread(state)
+
+    if state.queued_turns != [] or state.steer_queue != [] do
+      send(self(), :auto_start_queued)
+    end
 
     {:ok, state}
   end
@@ -405,6 +427,7 @@ defmodule EchsCore.ThreadWorker do
   def handle_call({:enqueue_message, content, opts}, _from, %{status: :running} = state) do
     mode = send_mode(opts)
     message_id = message_id_for_turn(state, opts)
+    request_json = encode_message_request(content, opts, mode)
 
     if MapSet.member?(state.message_id_set, message_id) do
       {:reply, {:ok, message_id}, touch(state)}
@@ -412,7 +435,9 @@ defmodule EchsCore.ThreadWorker do
       state =
         state
         |> remember_message_id(message_id)
-        |> message_log_enqueue(message_id)
+        |> message_log_enqueue(message_id, request_json)
+
+      _ = persist_message(state, message_id)
 
       state =
         case mode do
@@ -432,15 +457,20 @@ defmodule EchsCore.ThreadWorker do
 
   def handle_call({:enqueue_message, content, opts}, _from, state) do
     message_id = message_id_for_turn(state, opts)
+    request_json = encode_message_request(content, opts, :queue)
 
     if MapSet.member?(state.message_id_set, message_id) do
       {:reply, {:ok, message_id}, touch(state)}
     else
       state =
         state
+        |> remember_message_id(message_id)
+        |> message_log_enqueue(message_id, request_json)
         |> begin_turn(message_id)
         |> apply_turn_config(opts)
         |> add_user_message(content)
+
+      _ = persist_message(state, message_id)
 
       broadcast(state, :turn_started, %{thread_id: state.thread_id})
       state = start_stream(state)
@@ -453,11 +483,14 @@ defmodule EchsCore.ThreadWorker do
   def handle_call({:send_message, content, opts}, from, %{status: :running} = state) do
     mode = send_mode(opts)
     message_id = message_id_for_turn(state, opts)
+    request_json = encode_message_request(content, opts, mode)
 
     state =
       state
       |> remember_message_id(message_id)
-      |> message_log_enqueue(message_id)
+      |> message_log_enqueue(message_id, request_json)
+
+    _ = persist_message(state, message_id)
 
     state =
       case mode do
@@ -476,12 +509,17 @@ defmodule EchsCore.ThreadWorker do
 
   def handle_call({:send_message, content, opts}, from, state) do
     message_id = message_id_for_turn(state, opts)
+    request_json = encode_message_request(content, opts, :queue)
 
     state =
       state
+      |> remember_message_id(message_id)
+      |> message_log_enqueue(message_id, request_json)
       |> begin_turn(message_id)
       |> apply_turn_config(opts)
       |> add_user_message(content)
+
+    _ = persist_message(state, message_id)
 
     broadcast(state, :turn_started, %{thread_id: state.thread_id})
 
@@ -500,6 +538,8 @@ defmodule EchsCore.ThreadWorker do
       |> apply_config(config)
       |> touch()
 
+    _ = persist_thread(state)
+
     broadcast(state, :thread_configured, %{thread_id: state.thread_id, changes: config})
     {:reply, :ok, state}
   end
@@ -513,6 +553,8 @@ defmodule EchsCore.ThreadWorker do
           | tools: uniq_tools(state.tools ++ [normalized]),
             tool_handlers: Map.put(state.tool_handlers, name, handler)
         }
+
+        _ = persist_thread(state)
 
         {:reply, :ok, state}
 
@@ -530,6 +572,8 @@ defmodule EchsCore.ThreadWorker do
       | tools: remove_tool_spec(state.tools, name),
         tool_handlers: Map.delete(state.tool_handlers, name)
     }
+
+    _ = persist_thread(state)
 
     {:reply, :ok, state}
   end
@@ -649,13 +693,18 @@ defmodule EchsCore.ThreadWorker do
   end
 
   @impl true
+  def handle_info(:auto_start_queued, state) do
+    {:noreply, start_next_turn(state)}
+  end
+
+  @impl true
   def handle_info({:stream_complete, ref, result, collected_items}, state) do
     if ref == state.stream_ref do
       state = clear_stream(state)
 
       case result do
         {:ok, _} ->
-          state = %{state | history_items: state.history_items ++ collected_items}
+          state = append_history_items(state, collected_items)
 
           tool_calls =
             Enum.filter(collected_items, fn item ->
@@ -664,7 +713,7 @@ defmodule EchsCore.ThreadWorker do
 
           if tool_calls != [] do
             {tool_results, state} = execute_tool_calls(state, tool_calls)
-            state = %{state | history_items: state.history_items ++ tool_results}
+            state = append_history_items(state, tool_results)
             {:noreply, start_stream(state)}
           else
             state = complete_current_message(state, :completed, nil)
@@ -721,6 +770,7 @@ defmodule EchsCore.ThreadWorker do
             {:noreply, state}
 
           _ ->
+            state = complete_current_message(state, :error, reason)
             broadcast(state, :turn_error, %{thread_id: state.thread_id, error: reason})
             state = finish_turn(state, {:error, reason})
             state = reply_interrupt_waiters(state, {:error, reason})
@@ -818,6 +868,7 @@ defmodule EchsCore.ThreadWorker do
               "function_call_output"
             ]
           end)
+          |> expand_uploads_for_api()
 
         result =
           EchsCodex.stream_response(
@@ -977,7 +1028,9 @@ defmodule EchsCore.ThreadWorker do
       "content" => [%{"type" => "input_text", "text" => content}]
     }
 
-    %{state | history_items: state.history_items ++ [user_item], status: :running}
+    state
+    |> append_history_items([user_item])
+    |> Map.put(:status, :running)
   end
 
   defp add_user_message(state, content) when is_list(content) do
@@ -992,7 +1045,9 @@ defmodule EchsCore.ThreadWorker do
       "content" => content_items
     }
 
-    %{state | history_items: state.history_items ++ [user_item], status: :running}
+    state
+    |> append_history_items([user_item])
+    |> Map.put(:status, :running)
   end
 
   defp add_user_message(state, _content) do
@@ -1278,7 +1333,7 @@ defmodule EchsCore.ThreadWorker do
 
     case Tools.ViewImage.build_message_item(path, cwd: state.cwd) do
       {:ok, message_item} ->
-        {"attached local image", %{state | history_items: state.history_items ++ [message_item]}}
+        {"attached local image", append_history_items(state, [message_item])}
 
       {:error, {:too_large, size, max_bytes}} ->
         msg = "image too large (#{size} bytes > #{max_bytes} bytes): #{path}"
@@ -1815,6 +1870,131 @@ defmodule EchsCore.ThreadWorker do
     }
   end
 
+  defp store_enabled? do
+    Code.ensure_loaded?(EchsStore) and EchsStore.enabled?()
+  end
+
+  defp persist_thread(state) do
+    if store_enabled?() do
+      tools_json =
+        try do
+          Jason.encode!(state.tools)
+        rescue
+          Jason.EncodeError -> "[]"
+        end
+
+      _ =
+        EchsStore.upsert_thread(%{
+          thread_id: state.thread_id,
+          parent_thread_id: state.parent_thread_id,
+          created_at_ms: state.created_at_ms,
+          last_activity_at_ms: state.last_activity_at_ms,
+          model: state.model,
+          reasoning: state.reasoning,
+          cwd: state.cwd,
+          instructions: state.instructions,
+          tools_json: tools_json,
+          coordination_mode: Atom.to_string(state.coordination_mode),
+          history_count: length(state.history_items)
+        })
+
+      :ok
+    else
+      :ok
+    end
+  end
+
+  defp persist_message(state, message_id) when is_binary(message_id) and message_id != "" do
+    if store_enabled?() do
+      meta = Map.get(state.message_log, message_id)
+
+      if is_map(meta) do
+        _ =
+          EchsStore.upsert_message(state.thread_id, message_id, %{
+            status: to_string(meta.status),
+            enqueued_at_ms: meta.enqueued_at_ms,
+            started_at_ms: meta.started_at_ms,
+            completed_at_ms: meta.completed_at_ms,
+            history_start: meta.history_start,
+            history_end: meta.history_end,
+            error: format_message_error(meta.error),
+            request_json: meta.request_json
+          })
+
+        _ = persist_thread(state)
+        :ok
+      else
+        :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp persist_message(_state, _message_id), do: :ok
+
+  defp format_message_error(nil), do: nil
+  defp format_message_error(err) when is_binary(err), do: err
+  defp format_message_error(err), do: inspect(err)
+
+  defp append_history_items(state, items) when is_list(items) do
+    case items do
+      [] ->
+        state
+
+      _ ->
+        next = %{state | history_items: state.history_items ++ items} |> touch()
+
+        if store_enabled?() do
+          _ = EchsStore.append_items(state.thread_id, state.current_message_id, items)
+        end
+
+        next
+    end
+  end
+
+  defp append_history_items(state, _items), do: state
+
+  defp expand_uploads_for_api(items) when is_list(items) do
+    Enum.map(items, &expand_uploads_item/1)
+  end
+
+  defp expand_uploads_for_api(other), do: other
+
+  defp expand_uploads_item(%{"type" => "message"} = item) do
+    Map.update(item, "content", [], fn content ->
+      Enum.map(content, &expand_uploads_content_item/1)
+    end)
+  end
+
+  defp expand_uploads_item(item), do: item
+
+  defp expand_uploads_content_item(%{"type" => "input_image"} = item) do
+    upload_id = item["upload_id"]
+    image_url = item["image_url"]
+
+    cond do
+      is_binary(image_url) and image_url != "" ->
+        item
+
+      is_binary(upload_id) and upload_id != "" ->
+        case EchsCore.Uploads.image_url(upload_id) do
+          {:ok, url} ->
+            item
+            |> Map.put("image_url", url)
+            |> Map.delete("upload_id")
+
+          {:error, reason} ->
+            raise "unable to load upload #{upload_id}: #{inspect(reason)}"
+        end
+
+      true ->
+        item
+    end
+  end
+
+  defp expand_uploads_content_item(item), do: item
+
   defp broadcast(state, event_type, data) do
     data =
       data
@@ -1855,15 +2035,20 @@ defmodule EchsCore.ThreadWorker do
     now = now_ms()
     history_start = length(state.history_items)
 
+    state =
+      state
+      |> remember_message_id(message_id)
+      |> message_log_start(message_id, now, history_start)
+      |> Map.put(:current_message_id, message_id)
+      |> Map.put(:current_turn_started_at_ms, now)
+      |> touch()
+
+    _ = persist_message(state, message_id)
     state
-    |> remember_message_id(message_id)
-    |> message_log_start(message_id, now, history_start)
-    |> Map.put(:current_message_id, message_id)
-    |> Map.put(:current_turn_started_at_ms, now)
-    |> touch()
   end
 
-  defp message_log_enqueue(state, message_id) when is_binary(message_id) and message_id != "" do
+  defp message_log_enqueue(state, message_id, request_json)
+       when is_binary(message_id) and message_id != "" do
     now = now_ms()
 
     meta =
@@ -1871,12 +2056,13 @@ defmodule EchsCore.ThreadWorker do
       |> Map.get(message_id, %{message_id: message_id})
       |> Map.put_new(:enqueued_at_ms, now)
       |> Map.put(:status, :queued)
+      |> maybe_put_new(:request_json, request_json)
 
     %{state | message_log: Map.put(state.message_log, message_id, normalize_message_meta(meta))}
     |> touch()
   end
 
-  defp message_log_enqueue(state, _message_id), do: state
+  defp message_log_enqueue(state, _message_id, _request_json), do: state
 
   defp message_log_start(state, message_id, started_at_ms, history_start)
        when is_binary(message_id) and message_id != "" do
@@ -1910,8 +2096,12 @@ defmodule EchsCore.ThreadWorker do
       |> Map.put(:history_end, length(state.history_items))
       |> Map.put(:error, error)
 
-    %{state | message_log: Map.put(state.message_log, message_id, normalize_message_meta(meta))}
-    |> touch()
+    state =
+      %{state | message_log: Map.put(state.message_log, message_id, normalize_message_meta(meta))}
+      |> touch()
+
+    _ = persist_message(state, message_id)
+    state
   end
 
   defp cancel_reason_status(:paused), do: :paused
@@ -1931,7 +2121,12 @@ defmodule EchsCore.ThreadWorker do
           Map.delete(acc, id)
         end)
 
-      %{state | message_ids: message_ids, message_id_set: message_id_set, message_log: message_log}
+      %{
+        state
+        | message_ids: message_ids,
+          message_id_set: message_id_set,
+          message_log: message_log
+      }
     end
   end
 
@@ -1977,6 +2172,35 @@ defmodule EchsCore.ThreadWorker do
     |> Map.put_new(:history_start, nil)
     |> Map.put_new(:history_end, nil)
     |> Map.put_new(:error, nil)
+    |> Map.put_new(:request_json, nil)
+  end
+
+  defp maybe_put_new(map, _key, nil), do: map
+  defp maybe_put_new(map, key, value), do: Map.put_new(map, key, value)
+
+  defp encode_message_request(content, opts, mode) do
+    configure =
+      case Keyword.get(opts, :configure) do
+        cfg when is_map(cfg) -> cfg
+        _ -> %{}
+      end
+
+    payload = %{
+      "mode" => to_string(mode),
+      "configure" => configure,
+      "content" => content
+    }
+
+    try do
+      Jason.encode!(payload)
+    rescue
+      Jason.EncodeError ->
+        Jason.encode!(%{
+          "mode" => to_string(mode),
+          "configure" => %{},
+          "content" => inspect(content, limit: 2000, printable_limit: 2000)
+        })
+    end
   end
 
   defp now_ms do

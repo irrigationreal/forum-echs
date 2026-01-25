@@ -3,6 +3,7 @@ defmodule EchsCore do
   Public API for managing Codex threads and runtime state.
   """
 
+  alias EchsCore.StoreRestore
   alias EchsCore.ThreadWorker
 
   @spec create_thread(keyword()) :: {:ok, String.t()} | {:error, term()}
@@ -32,7 +33,13 @@ defmodule EchsCore do
     do: ThreadWorker.get_message_items(thread_id, message_id, opts)
 
   @spec get_history(String.t(), keyword()) ::
-          {:ok, %{total: non_neg_integer(), offset: non_neg_integer(), limit: non_neg_integer(), items: [map()]}}
+          {:ok,
+           %{
+             total: non_neg_integer(),
+             offset: non_neg_integer(),
+             limit: non_neg_integer(),
+             items: [map()]
+           }}
   def get_history(thread_id, opts \\ []),
     do: ThreadWorker.get_history(thread_id, opts)
 
@@ -69,6 +76,20 @@ defmodule EchsCore do
 
   @spec kill_thread(String.t()) :: :ok
   def kill_thread(thread_id), do: ThreadWorker.kill(thread_id)
+
+  @doc """
+  Restore a previously persisted thread from SQLite into a live `ThreadWorker`.
+
+  This is used by `echs_server` to survive daemon restarts: the durable state
+  lives in `echs_store`, and restoring rehydrates an in-memory worker so the
+  thread can continue tool-loop execution.
+
+  If the thread is already running, this is a no-op.
+  """
+  @spec restore_thread(String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def restore_thread(thread_id, opts \\ []) do
+    StoreRestore.restore_thread(thread_id, opts)
+  end
 
   @spec subscribe(String.t()) :: :ok | {:error, term()}
   def subscribe(thread_id), do: ThreadWorker.subscribe(thread_id)

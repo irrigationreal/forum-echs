@@ -22,3 +22,19 @@ import Config
 # Avoid binding sockets during `mix test` by default.
 config :echs_server,
   start_server: config_env() != :test
+
+# SQLite-backed persistence used by the daemon. In tests we use a single
+# in-memory connection for determinism.
+config :echs_store,
+  ecto_repos: [EchsStore.Repo]
+
+config :echs_store, EchsStore.Repo,
+  database:
+    (if config_env() == :test do
+       ":memory:"
+     else
+       Path.expand("tmp/echs.db", File.cwd!())
+     end),
+  pool_size: if(config_env() == :test, do: 1, else: 5),
+  journal_mode: :wal,
+  synchronous: :normal

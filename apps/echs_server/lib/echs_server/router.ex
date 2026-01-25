@@ -6,6 +6,7 @@ defmodule EchsServer.Router do
   import Plug.Conn
 
   alias EchsServer.JSON
+  alias EchsStore.{Message, Thread}
 
   plug(EchsServer.AuthPlug)
 
@@ -84,16 +85,33 @@ defmodule EchsServer.Router do
         {{:"$1", :_, :_}, [], [:"$1"]}
       ])
 
-    threads =
+    live =
       ids
       |> Enum.map(fn id ->
         case safe_get_state(id) do
-          {:ok, state} -> sanitize_state(state)
+          {:ok, state} -> {id, sanitize_state(state)}
           :not_found -> nil
         end
       end)
       |> Enum.reject(&is_nil/1)
+      |> Map.new()
 
+    stored =
+      if store_enabled?() do
+        EchsStore.list_threads(limit: 200)
+        |> Enum.reduce([], fn %Thread{} = t, acc ->
+          if Map.has_key?(live, t.thread_id) do
+            acc
+          else
+            [sanitize_thread_record(t) | acc]
+          end
+        end)
+        |> Enum.reverse()
+      else
+        []
+      end
+
+    threads = Map.values(live) ++ stored
     JSON.send_json(conn, 200, %{threads: threads})
   end
 
@@ -103,7 +121,13 @@ defmodule EchsServer.Router do
         JSON.send_json(conn, 200, %{thread_id: thread_id, state: sanitize_state(state)})
 
       :not_found ->
-        JSON.send_error(conn, 404, "thread not found")
+        case store_get_thread(thread_id) do
+          {:ok, %Thread{} = t} ->
+            JSON.send_json(conn, 200, %{thread_id: thread_id, state: sanitize_thread_record(t)})
+
+          {:error, :not_found} ->
+            JSON.send_error(conn, 404, "thread not found")
+        end
     end
   end
 
@@ -119,7 +143,19 @@ defmodule EchsServer.Router do
         JSON.send_json(conn, 200, Map.put(resp, :items, items) |> Map.put(:thread_id, thread_id))
 
       {:error, :not_found} ->
-        JSON.send_error(conn, 404, "thread not found")
+        case store_get_history(thread_id, offset, limit) do
+          {:ok, %{items: items} = resp} ->
+            items = maybe_redact_history(items, redact?)
+
+            JSON.send_json(
+              conn,
+              200,
+              Map.put(resp, :items, items) |> Map.put(:thread_id, thread_id)
+            )
+
+          {:error, :not_found} ->
+            JSON.send_error(conn, 404, "thread not found")
+        end
     end
   end
 
@@ -129,10 +165,22 @@ defmodule EchsServer.Router do
 
     case safe_list_messages(thread_id, limit: limit) do
       {:ok, messages} ->
-        JSON.send_json(conn, 200, %{thread_id: thread_id, messages: sanitize_message_list(messages)})
+        JSON.send_json(conn, 200, %{
+          thread_id: thread_id,
+          messages: sanitize_message_list(messages)
+        })
 
       {:error, :not_found} ->
-        JSON.send_error(conn, 404, "thread not found")
+        case store_list_messages(thread_id, limit) do
+          {:ok, messages} ->
+            JSON.send_json(conn, 200, %{
+              thread_id: thread_id,
+              messages: sanitize_message_list(messages)
+            })
+
+          {:error, :not_found} ->
+            JSON.send_error(conn, 404, "thread not found")
+        end
     end
   end
 
@@ -165,7 +213,25 @@ defmodule EchsServer.Router do
       end
     else
       {:error, :thread_not_found} ->
-        JSON.send_error(conn, 404, "thread not found")
+        case store_get_message(thread_id, message_id, include_items?: include_items?) do
+          {:ok, %{message: message, items: items}} ->
+            items = maybe_redact_history(items, redact?)
+
+            JSON.send_json(conn, 200, %{
+              thread_id: thread_id,
+              message: sanitize_message(message),
+              items: items
+            })
+
+          {:ok, %{message: message}} ->
+            JSON.send_json(conn, 200, %{thread_id: thread_id, message: sanitize_message(message)})
+
+          {:error, :thread_not_found} ->
+            JSON.send_error(conn, 404, "thread not found")
+
+          {:error, :not_found} ->
+            JSON.send_error(conn, 404, "message not found")
+        end
 
       {:error, :not_found} ->
         JSON.send_error(conn, 404, "message not found")
@@ -185,7 +251,17 @@ defmodule EchsServer.Router do
         JSON.send_json(conn, 200, %{ok: true})
 
       :not_found ->
-        JSON.send_error(conn, 404, "thread not found")
+        case EchsCore.restore_thread(thread_id) do
+          {:ok, _} ->
+            :ok = EchsCore.configure_thread(thread_id, normalize_config(config))
+            JSON.send_json(conn, 200, %{ok: true})
+
+          {:error, :not_found} ->
+            JSON.send_error(conn, 404, "thread not found")
+
+          {:error, reason} ->
+            JSON.send_error(conn, 500, "restore failed", %{reason: inspect(reason)})
+        end
     end
   end
 
@@ -209,7 +285,32 @@ defmodule EchsServer.Router do
           JSON.send_json(conn, 202, %{ok: true, thread_id: thread_id, message_id: message_id})
 
         {:error, :not_found} ->
-          JSON.send_error(conn, 404, "thread not found")
+          case EchsCore.restore_thread(thread_id) do
+            {:ok, _} ->
+              case safe_enqueue_message(thread_id, content, opts) do
+                {:ok, message_id} ->
+                  JSON.send_json(conn, 202, %{
+                    ok: true,
+                    thread_id: thread_id,
+                    message_id: message_id
+                  })
+
+                {:error, :paused} ->
+                  JSON.send_error(conn, 409, "thread is paused")
+
+                {:error, :not_found} ->
+                  JSON.send_error(conn, 404, "thread not found")
+
+                {:error, reason} ->
+                  JSON.send_error(conn, 500, "enqueue_message failed", %{reason: inspect(reason)})
+              end
+
+            {:error, :not_found} ->
+              JSON.send_error(conn, 404, "thread not found")
+
+            {:error, reason} ->
+              JSON.send_error(conn, 500, "restore failed", %{reason: inspect(reason)})
+          end
 
         {:error, :paused} ->
           JSON.send_error(conn, 409, "thread is paused")
@@ -393,52 +494,87 @@ defmodule EchsServer.Router do
 
     case content do
       items when is_list(items) ->
-        case resolve_uploads_in_content(items) do
-          {:ok, resolved} -> {:ok, resolved}
-          {:error, reason} -> {:error, {:invalid_content, reason}}
-        end
+        {:ok,
+         Enum.map(items, fn item -> if is_map(item), do: stringify_keys(item), else: item end)}
 
       other ->
         {:ok, other}
     end
   end
 
-  defp resolve_uploads_in_content(items) when is_list(items) do
-    items
-    |> Enum.reduce_while({:ok, []}, fn item, {:ok, acc} ->
-      item = if is_map(item), do: stringify_keys(item), else: item
-
-      cond do
-        is_map(item) and item["type"] == "input_image" and is_binary(item["upload_id"]) and
-            item["image_url"] in [nil, ""] ->
-          case EchsServer.Uploads.image_url(item["upload_id"]) do
-            {:ok, image_url} ->
-              {:cont, {:ok, [Map.put(item, "image_url", image_url) | acc]}}
-
-            {:error, :not_found} ->
-              {:halt, {:error, {:upload_not_found, item["upload_id"]}}}
-
-            {:error, reason} ->
-              {:halt, {:error, {:upload_error, item["upload_id"], reason}}}
-          end
-
-        true ->
-          {:cont, {:ok, [item | acc]}}
-      end
-    end)
-    |> case do
-      {:ok, acc} -> {:ok, Enum.reverse(acc)}
-      {:error, _} = err -> err
-    end
-  end
-
-  defp resolve_uploads_in_content(_), do: {:ok, []}
-
   defp safe_get_state(thread_id) do
     try do
       {:ok, EchsCore.get_state(thread_id)}
     catch
       :exit, _ -> :not_found
+    end
+  end
+
+  defp store_enabled? do
+    Code.ensure_loaded?(EchsStore) and EchsStore.enabled?()
+  end
+
+  defp store_get_thread(thread_id) do
+    if store_enabled?() do
+      EchsStore.get_thread(thread_id)
+    else
+      {:error, :not_found}
+    end
+  end
+
+  defp store_get_history(thread_id, offset, limit) do
+    if store_enabled?() do
+      EchsStore.get_slice(thread_id, offset, limit)
+    else
+      {:error, :not_found}
+    end
+  end
+
+  defp store_list_messages(thread_id, limit) do
+    if store_enabled?() do
+      case EchsStore.get_thread(thread_id) do
+        {:ok, _} ->
+          messages =
+            EchsStore.list_messages(thread_id, limit: limit)
+            |> Enum.map(&store_message_to_meta/1)
+
+          {:ok, messages}
+
+        {:error, :not_found} ->
+          {:error, :not_found}
+      end
+    else
+      {:error, :not_found}
+    end
+  end
+
+  defp store_get_message(thread_id, message_id, opts) do
+    include_items? = Keyword.get(opts, :include_items?, false)
+
+    if store_enabled?() do
+      with {:ok, _} <- EchsStore.get_thread(thread_id),
+           {:ok, %Message{} = msg} <- EchsStore.get_message(thread_id, message_id) do
+        meta = store_message_to_meta(msg)
+
+        if include_items? do
+          case EchsStore.get_by_message(thread_id, message_id) do
+            {:ok, items} -> {:ok, %{message: meta, items: items}}
+            {:error, :not_found} -> {:ok, %{message: meta, items: []}}
+          end
+        else
+          {:ok, %{message: meta}}
+        end
+      else
+        {:error, :not_found} ->
+          # Could be missing thread or missing message; check thread first to
+          # make the response stable.
+          case EchsStore.get_thread(thread_id) do
+            {:ok, _} -> {:error, :not_found}
+            {:error, :not_found} -> {:error, :thread_not_found}
+          end
+      end
+    else
+      {:error, :thread_not_found}
     end
   end
 
@@ -535,6 +671,19 @@ defmodule EchsServer.Router do
   defp format_message_error(err) when is_binary(err), do: err
   defp format_message_error(err), do: inspect(err)
 
+  defp store_message_to_meta(%Message{} = msg) do
+    %{
+      message_id: msg.message_id,
+      status: msg.status,
+      enqueued_at_ms: msg.enqueued_at_ms,
+      started_at_ms: msg.started_at_ms,
+      completed_at_ms: msg.completed_at_ms,
+      history_start: msg.history_start,
+      history_end: msg.history_end,
+      error: msg.error
+    }
+  end
+
   defp maybe_redact_history(items, false), do: items
 
   defp maybe_redact_history(items, true) when is_list(items) do
@@ -593,6 +742,36 @@ defmodule EchsServer.Router do
       coordination_mode: state.coordination_mode,
       tools: Enum.map(state.tools, fn t -> Map.get(t, "name") || Map.get(t, "type") end),
       children: Map.keys(state.children)
+    }
+  end
+
+  defp sanitize_thread_record(%Thread{} = t) do
+    tools =
+      case Jason.decode(t.tools_json || "[]") do
+        {:ok, list} when is_list(list) ->
+          Enum.map(list, fn tool -> Map.get(tool, "name") || Map.get(tool, "type") end)
+
+        _ ->
+          []
+      end
+
+    %{
+      thread_id: t.thread_id,
+      parent_thread_id: t.parent_thread_id,
+      created_at: iso8601(t.created_at_ms),
+      last_activity_at: iso8601(t.last_activity_at_ms),
+      model: t.model,
+      reasoning: t.reasoning,
+      cwd: t.cwd,
+      status: "stored",
+      current_message_id: nil,
+      current_turn_started_at: nil,
+      queued_turns: nil,
+      steer_queue: nil,
+      history_items: t.history_count || 0,
+      coordination_mode: t.coordination_mode,
+      tools: tools,
+      children: []
     }
   end
 

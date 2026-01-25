@@ -32,6 +32,7 @@ defmodule Echs.MixProject do
           echs_server: :permanent,
           echs_core: :permanent,
           echs_codex: :permanent,
+          echs_store: :permanent,
           echs_protocol: :permanent,
           runtime_tools: :permanent
         ]

@@ -210,6 +210,13 @@ If a client disconnects from SSE, you can still query the server for:
 - per-message history slices (the items produced by that message)
 - the thread's full history (paged)
 
+ECHS also persists threads/messages/history to SQLite (`echs_store`). If the
+daemon restarts, these read endpoints still work for stored threads, and
+`POST /v1/threads/<thread_id>/messages` will automatically restore the thread
+into memory before enqueueing.
+
+Stored threads show up in `GET /v1/threads` with `status: "stored"`.
+
 List messages:
 
 ```bash

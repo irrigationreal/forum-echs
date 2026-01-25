@@ -260,7 +260,8 @@ defmodule EchsProtocol.V1.OpenAPI do
               in: "query",
               required: false,
               schema: %{type: "boolean", default: false},
-              description: "If true, include the history items slice associated with this message."
+              description:
+                "If true, include the history items slice associated with this message."
             },
             %{
               name: "redact",
@@ -295,7 +296,12 @@ defmodule EchsProtocol.V1.OpenAPI do
         get: %{
           summary: "Get thread history items (paged)",
           parameters: [
-            %{name: "offset", in: "query", required: false, schema: %{type: "integer", default: 0, minimum: 0}},
+            %{
+              name: "offset",
+              in: "query",
+              required: false,
+              schema: %{type: "integer", default: 0, minimum: 0}
+            },
             %{
               name: "limit",
               in: "query",
@@ -434,13 +440,13 @@ defmodule EchsProtocol.V1.OpenAPI do
           model: %{type: "string"},
           reasoning: %{type: "string"},
           cwd: %{type: "string"},
-          status: %{type: "string", enum: ["idle", "running", "paused"]},
+          status: %{type: "string", enum: ["idle", "running", "paused", "stored"]},
           current_message_id: %{
             oneOf: [%{"$ref" => "#/components/schemas/MessageId"}, %{type: "null"}]
           },
           current_turn_started_at: %{"$ref" => "#/components/schemas/ISO8601"},
-          queued_turns: %{type: "integer"},
-          steer_queue: %{type: "integer"},
+          queued_turns: %{type: ["integer", "null"]},
+          steer_queue: %{type: ["integer", "null"]},
           history_items: %{type: "integer"},
           coordination_mode: %{type: "string", enum: ["hierarchical", "blackboard", "peer"]},
           tools: %{type: "array", items: %{type: "string"}},
@@ -540,7 +546,10 @@ defmodule EchsProtocol.V1.OpenAPI do
         type: "object",
         properties: %{
           message_id: %{"$ref" => "#/components/schemas/MessageId"},
-          status: %{type: "string", enum: ["queued", "running", "completed", "interrupted", "paused", "error"]},
+          status: %{
+            type: "string",
+            enum: ["queued", "running", "completed", "interrupted", "paused", "error"]
+          },
           enqueued_at: %{"$ref" => "#/components/schemas/ISO8601"},
           started_at: %{"$ref" => "#/components/schemas/ISO8601"},
           completed_at: %{"$ref" => "#/components/schemas/ISO8601"},
