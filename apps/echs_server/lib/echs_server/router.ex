@@ -749,7 +749,13 @@ defmodule EchsServer.Router do
     tools =
       case Jason.decode(t.tools_json || "[]") do
         {:ok, list} when is_list(list) ->
-          Enum.map(list, fn tool -> Map.get(tool, "name") || Map.get(tool, "type") end)
+          list
+          |> Enum.map(fn
+            tool when is_map(tool) -> Map.get(tool, "name") || Map.get(tool, "type")
+            tool when is_binary(tool) -> tool
+            _ -> nil
+          end)
+          |> Enum.reject(&is_nil/1)
 
         _ ->
           []

@@ -250,4 +250,80 @@ defmodule EchsServer.RouterTest do
     assert conn.status == 200
     assert Jason.decode!(conn.resp_body)["state"]["reasoning"] == "high"
   end
+
+  test "stored thread can be listed and fetched (no live worker)" do
+    now = System.system_time(:millisecond)
+    thread_id = "thr_store_test_" <> Integer.to_string(System.unique_integer([:positive]))
+
+    {:ok, _} =
+      EchsStore.upsert_thread(%{
+        thread_id: thread_id,
+        parent_thread_id: nil,
+        created_at_ms: now,
+        last_activity_at_ms: now,
+        model: "gpt-5.2-codex",
+        reasoning: "medium",
+        cwd: File.cwd!(),
+        instructions: "hi",
+        tools_json: "[]",
+        coordination_mode: "hierarchical",
+        history_count: 0
+      })
+
+    # Not running yet.
+    assert Registry.lookup(EchsCore.Registry, thread_id) == []
+
+    conn = conn(:get, "/v1/threads")
+    conn = Router.call(conn, [])
+    assert conn.status == 200
+
+    threads = Jason.decode!(conn.resp_body)["threads"]
+
+    stored =
+      Enum.find(threads, fn t ->
+        t["thread_id"] == thread_id
+      end)
+
+    assert stored["status"] == "stored"
+
+    conn = conn(:get, "/v1/threads/#{thread_id}")
+    conn = Router.call(conn, [])
+    assert conn.status == 200
+
+    state = Jason.decode!(conn.resp_body)["state"]
+    assert state["thread_id"] == thread_id
+    assert state["status"] == "stored"
+  end
+
+  test "patch restores a stored thread into memory" do
+    now = System.system_time(:millisecond)
+    thread_id = "thr_restore_test_" <> Integer.to_string(System.unique_integer([:positive]))
+
+    {:ok, _} =
+      EchsStore.upsert_thread(%{
+        thread_id: thread_id,
+        parent_thread_id: nil,
+        created_at_ms: now,
+        last_activity_at_ms: now,
+        model: "gpt-5.2-codex",
+        reasoning: "medium",
+        cwd: File.cwd!(),
+        instructions: "hi",
+        tools_json: "[]",
+        coordination_mode: "hierarchical",
+        history_count: 0
+      })
+
+    patch_body = Jason.encode!(%{"config" => %{"reasoning" => "high"}})
+
+    conn =
+      conn(:patch, "/v1/threads/#{thread_id}", patch_body)
+      |> put_req_header("content-type", "application/json")
+
+    conn = Router.call(conn, [])
+    assert conn.status == 200
+
+    assert [{pid, _}] = Registry.lookup(EchsCore.Registry, thread_id)
+    assert is_pid(pid)
+  end
 end
