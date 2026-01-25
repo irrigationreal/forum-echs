@@ -26,6 +26,7 @@ defmodule EchsServer.MixProject do
     [
       {:echs_core, in_umbrella: true},
       {:echs_codex, in_umbrella: true},
+      {:echs_protocol, in_umbrella: true},
       {:jason, "~> 1.4"},
       {:plug, "~> 1.15"},
       {:bandit, "~> 1.5"}

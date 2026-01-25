@@ -64,6 +64,15 @@ Health check:
 curl -s http://127.0.0.1:4000/healthz
 ```
 
+OpenAPI:
+
+```bash
+curl -s http://127.0.0.1:4000/openapi.json | jq .
+
+# Or write a file:
+mix echs.openapi --out openapi.json
+```
+
 ## HTTP API (REST + SSE)
 
 This API is intentionally close to the Responses item model ECHS uses
@@ -88,6 +97,12 @@ Response:
 {"thread_id":"thr_..."}
 ```
 
+### List threads (with metadata)
+
+```bash
+curl -s http://127.0.0.1:4000/v1/threads | jq .
+```
+
 ### Update thread configuration
 
 ```bash
@@ -106,7 +121,7 @@ Supported config keys today:
 
 - `cwd`, `model`, `reasoning`, `instructions`, `tools`
 
-### Send a message
+### Send a message (async)
 
 ```bash
 curl -s -X POST http://127.0.0.1:4000/v1/threads/<thread_id>/messages \\
@@ -115,6 +130,15 @@ curl -s -X POST http://127.0.0.1:4000/v1/threads/<thread_id>/messages \\
     "mode": "queue",
     "content": "Hello from the wire API"
   }'
+```
+
+This is asynchronous: the server returns `202 Accepted` with a `message_id`,
+and you consume streaming output via SSE.
+
+Response:
+
+```json
+{"ok":true,"thread_id":"thr_...","message_id":"msg_..."}
 ```
 
 You can also supply `configure` to hot-swap settings before sending:
@@ -129,6 +153,8 @@ curl -s -X POST http://127.0.0.1:4000/v1/threads/<thread_id>/messages \\
   }'
 ```
 
+If you want idempotency, you can provide your own `message_id` in the request.
+
 ### Stream events (SSE)
 
 ```bash
@@ -139,7 +165,35 @@ Events are emitted from `EchsCore.ThreadWorker` and sent as:
 
 ```text
 event: turn_delta
-data: {"thread_id":"...","content":"..."}
+data: {"thread_id":"...","message_id":"msg_...","content":"..."}
+```
+
+### Uploading Images (HTTP)
+
+ECHS supports `input_image` content items. The easiest way to construct those
+from a client is:
+
+1) `POST /v1/uploads` (multipart) to get a base64 `data:` URL + a ready content item
+2) Send a message with `content: [ ... ]` including that `input_image`
+
+Upload:
+
+```bash
+curl -s -X POST http://127.0.0.1:4000/v1/uploads \\
+  -F file=@/path/to/image.png | jq .
+```
+
+Then send:
+
+```bash
+curl -s -X POST http://127.0.0.1:4000/v1/threads/<thread_id>/messages \\
+  -H 'content-type: application/json' \\
+  -d '{
+    "content": [
+      {"type": "input_text", "text": "Describe this image"},
+      {"type": "input_image", "image_url": "data:image/png;base64,...."}
+    ]
+  }'
 ```
 
 

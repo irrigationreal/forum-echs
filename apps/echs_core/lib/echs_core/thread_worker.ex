@@ -71,6 +71,8 @@ defmodule EchsCore.ThreadWorker do
   defstruct [
     :thread_id,
     :parent_thread_id,
+    :created_at_ms,
+    :last_activity_at_ms,
     :model,
     :reasoning,
     :cwd,
@@ -78,6 +80,8 @@ defmodule EchsCore.ThreadWorker do
     :tools,
     :history_items,
     :status,
+    :current_message_id,
+    :current_turn_started_at_ms,
     :children,
     :coordination_mode,
     :blackboard,
@@ -99,16 +103,26 @@ defmodule EchsCore.ThreadWorker do
           | {module(), atom()}
           | {module(), atom(), [term()]}
   @type child_info :: %{pid: pid() | nil, monitor_ref: reference() | nil}
-  @type queued_turn :: %{from: GenServer.from(), content: String.t(), opts: keyword()}
+  @type queued_turn :: %{
+          from: GenServer.from() | nil,
+          content: String.t() | [map()],
+          opts: keyword(),
+          message_id: String.t(),
+          enqueued_at_ms: non_neg_integer()
+        }
   @type steer_turn :: %{
           from: GenServer.from() | nil,
-          content: String.t(),
+          content: String.t() | [map()],
           opts: keyword(),
+          message_id: String.t(),
+          enqueued_at_ms: non_neg_integer(),
           preserve_reply?: boolean()
         }
   @type state :: %__MODULE__{
           thread_id: thread_id(),
           parent_thread_id: thread_id() | nil,
+          created_at_ms: non_neg_integer(),
+          last_activity_at_ms: non_neg_integer(),
           model: String.t(),
           reasoning: String.t(),
           cwd: String.t(),
@@ -116,6 +130,8 @@ defmodule EchsCore.ThreadWorker do
           tools: list(map()),
           history_items: [history_item()],
           status: :idle | :running | :paused,
+          current_message_id: String.t() | nil,
+          current_turn_started_at_ms: non_neg_integer() | nil,
           children: %{optional(thread_id()) => child_info()},
           coordination_mode: :hierarchical | :blackboard | :peer,
           blackboard: pid(),
@@ -168,6 +184,23 @@ defmodule EchsCore.ThreadWorker do
           {:ok, [history_item()]} | {:error, term()}
   def send_message(thread_id, content, opts \\ []) do
     GenServer.call(via_tuple(thread_id), {:send_message, content, opts}, :infinity)
+  end
+
+  @doc """
+  Enqueue a user message and start a turn asynchronously.
+
+  This call returns immediately with a `message_id`. Turn progress and results
+  are surfaced via PubSub events (and the server's SSE endpoint).
+
+  Options:
+    - :mode - :queue (default) or :steer. When running, :queue enqueues and :steer preempts.
+    - :configure - config map to apply for this turn.
+    - :message_id - optional caller-provided message id (useful for idempotency).
+  """
+  @spec enqueue_message(thread_id(), String.t() | [map()], keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def enqueue_message(thread_id, content, opts \\ []) do
+    GenServer.call(via_tuple(thread_id), {:enqueue_message, content, opts})
   end
 
   @doc """
@@ -249,6 +282,7 @@ defmodule EchsCore.ThreadWorker do
     thread_id = Keyword.fetch!(opts, :thread_id)
     parent_thread_id = Keyword.get(opts, :parent_thread_id)
     cwd = Keyword.get(opts, :cwd, File.cwd!())
+    now_ms = now_ms()
 
     # Create thread-local blackboard
     {:ok, blackboard} = Blackboard.start_link([])
@@ -262,6 +296,8 @@ defmodule EchsCore.ThreadWorker do
     state = %__MODULE__{
       thread_id: thread_id,
       parent_thread_id: parent_thread_id,
+      created_at_ms: now_ms,
+      last_activity_at_ms: now_ms,
       model: Keyword.get(opts, :model, "gpt-5.2-codex"),
       reasoning: Keyword.get(opts, :reasoning, "medium"),
       cwd: cwd,
@@ -269,6 +305,8 @@ defmodule EchsCore.ThreadWorker do
       tools: Keyword.get(opts, :tools, default_tools()),
       history_items: [],
       status: :idle,
+      current_message_id: nil,
+      current_turn_started_at_ms: nil,
       children: %{},
       coordination_mode: Keyword.get(opts, :coordination_mode, :hierarchical),
       blackboard: blackboard,
@@ -293,13 +331,53 @@ defmodule EchsCore.ThreadWorker do
   end
 
   @impl true
-  def handle_call({:send_message, content, opts}, from, %{status: :running} = state) do
+  def handle_call({:enqueue_message, _content, _opts}, _from, %{status: :paused} = state) do
+    {:reply, {:error, :paused}, state}
+  end
+
+  def handle_call({:enqueue_message, content, opts}, _from, %{status: :running} = state) do
     mode = send_mode(opts)
+    message_id = message_id_for_turn(state, opts)
 
     state =
       case mode do
-        :steer -> enqueue_steer(state, from, content, opts, preserve_reply?: false)
-        _ -> enqueue_turn(state, from, content, opts)
+        :steer -> enqueue_steer(state, nil, content, opts, message_id, preserve_reply?: false)
+        _ -> enqueue_turn(state, nil, content, opts, message_id)
+      end
+
+    state =
+      case mode do
+        :steer -> request_stream_control(state, :steer)
+        _ -> state
+      end
+
+    {:reply, {:ok, message_id}, state}
+  end
+
+  def handle_call({:enqueue_message, content, opts}, _from, state) do
+    message_id = message_id_for_turn(state, opts)
+
+    state =
+      state
+      |> begin_turn(message_id)
+      |> apply_turn_config(opts)
+      |> add_user_message(content)
+
+    broadcast(state, :turn_started, %{thread_id: state.thread_id})
+    state = start_stream(state)
+
+    {:reply, {:ok, message_id}, state}
+  end
+
+  @impl true
+  def handle_call({:send_message, content, opts}, from, %{status: :running} = state) do
+    mode = send_mode(opts)
+    message_id = message_id_for_turn(state, opts)
+
+    state =
+      case mode do
+        :steer -> enqueue_steer(state, from, content, opts, message_id, preserve_reply?: false)
+        _ -> enqueue_turn(state, from, content, opts, message_id)
       end
 
     state =
@@ -312,8 +390,11 @@ defmodule EchsCore.ThreadWorker do
   end
 
   def handle_call({:send_message, content, opts}, from, state) do
+    message_id = message_id_for_turn(state, opts)
+
     state =
       state
+      |> begin_turn(message_id)
       |> apply_turn_config(opts)
       |> add_user_message(content)
 
@@ -329,7 +410,11 @@ defmodule EchsCore.ThreadWorker do
 
   @impl true
   def handle_call({:configure, config}, _from, state) do
-    state = apply_config(state, config)
+    state =
+      state
+      |> apply_config(config)
+      |> touch()
+
     broadcast(state, :thread_configured, %{thread_id: state.thread_id, changes: config})
     {:reply, :ok, state}
   end
@@ -377,7 +462,7 @@ defmodule EchsCore.ThreadWorker do
 
   @impl true
   def handle_call(:resume, _from, state) do
-    {:reply, :ok, %{state | status: :idle}}
+    {:reply, :ok, touch(%{state | status: :idle})}
   end
 
   @impl true
@@ -387,7 +472,7 @@ defmodule EchsCore.ThreadWorker do
       state = %{state | pending_interrupts: [from | state.pending_interrupts]}
       {:noreply, state}
     else
-      {:reply, :ok, %{state | status: :idle}}
+      {:reply, :ok, touch(%{state | status: :idle})}
     end
   end
 
@@ -405,7 +490,7 @@ defmodule EchsCore.ThreadWorker do
 
       state =
         state
-        |> enqueue_steer(nil, content, [], preserve_reply?: true)
+        |> enqueue_steer(nil, content, [], state.current_message_id, preserve_reply?: true)
         |> request_stream_control(:steer)
 
       {:noreply, state}
@@ -678,14 +763,20 @@ defmodule EchsCore.ThreadWorker do
   end
 
   defp finish_turn(state, reply) do
-    case state.reply_to do
-      nil ->
-        state
+    state =
+      case state.reply_to do
+        nil ->
+          state
 
-      from ->
-        GenServer.reply(from, reply)
-        %{state | reply_to: nil}
-    end
+        from ->
+          GenServer.reply(from, reply)
+          %{state | reply_to: nil}
+      end
+
+    state
+    |> Map.put(:current_message_id, nil)
+    |> Map.put(:current_turn_started_at_ms, nil)
+    |> touch()
   end
 
   defp request_stream_control(state, control) do
@@ -769,14 +860,29 @@ defmodule EchsCore.ThreadWorker do
 
   defp normalize_message_content_item(_item), do: nil
 
-  defp enqueue_turn(state, from, content, opts) do
-    turn = %{from: from, content: content, opts: opts}
-    %{state | queued_turns: state.queued_turns ++ [turn]}
+  defp enqueue_turn(state, from, content, opts, message_id) do
+    turn = %{
+      from: from,
+      content: content,
+      opts: opts,
+      message_id: message_id,
+      enqueued_at_ms: now_ms()
+    }
+
+    %{touch(state) | queued_turns: state.queued_turns ++ [turn]}
   end
 
-  defp enqueue_steer(state, from, content, opts, preserve_reply?: preserve_reply?) do
-    turn = %{from: from, content: content, opts: opts, preserve_reply?: preserve_reply?}
-    %{state | steer_queue: state.steer_queue ++ [turn]}
+  defp enqueue_steer(state, from, content, opts, message_id, preserve_reply?: preserve_reply?) do
+    turn = %{
+      from: from,
+      content: content,
+      opts: opts,
+      message_id: message_id,
+      enqueued_at_ms: now_ms(),
+      preserve_reply?: preserve_reply?
+    }
+
+    %{touch(state) | steer_queue: state.steer_queue ++ [turn]}
   end
 
   defp start_next_turn(state) do
@@ -804,6 +910,7 @@ defmodule EchsCore.ThreadWorker do
 
     state =
       state
+      |> begin_turn(next.message_id)
       |> apply_turn_config(next.opts)
       |> add_user_message(next.content)
 
@@ -826,6 +933,7 @@ defmodule EchsCore.ThreadWorker do
 
     state =
       state
+      |> begin_turn(next.message_id)
       |> apply_turn_config(next.opts)
       |> add_user_message(next.content)
 
@@ -1552,6 +1660,10 @@ defmodule EchsCore.ThreadWorker do
   end
 
   defp broadcast(state, event_type, data) do
+    data =
+      data
+      |> maybe_put(:message_id, state.current_message_id)
+
     Phoenix.PubSub.broadcast(
       EchsCore.PubSub,
       "thread:#{state.thread_id}",
@@ -1559,7 +1671,38 @@ defmodule EchsCore.ThreadWorker do
     )
   end
 
+  defp maybe_put(data, _key, nil), do: data
+  defp maybe_put(data, key, value), do: Map.put_new(data, key, value)
+
   defp generate_id do
     "thr_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+  end
+
+  defp generate_message_id do
+    "msg_" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+  end
+
+  defp message_id_for_turn(_state, opts) when is_list(opts) do
+    case Keyword.get(opts, :message_id) do
+      id when is_binary(id) and id != "" -> id
+      _ -> generate_message_id()
+    end
+  end
+
+  defp message_id_for_turn(state, _opts) do
+    message_id_for_turn(state, [])
+  end
+
+  defp begin_turn(state, message_id) when is_binary(message_id) and message_id != "" do
+    %{state | current_message_id: message_id, current_turn_started_at_ms: now_ms()}
+    |> touch()
+  end
+
+  defp touch(state) do
+    %{state | last_activity_at_ms: now_ms()}
+  end
+
+  defp now_ms do
+    System.system_time(:millisecond)
   end
 end

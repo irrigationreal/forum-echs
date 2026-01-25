@@ -13,6 +13,11 @@ defmodule EchsCore do
   def send_message(thread_id, content, opts \\ []),
     do: ThreadWorker.send_message(thread_id, content, opts)
 
+  @spec enqueue_message(String.t(), String.t() | [map()], keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def enqueue_message(thread_id, content, opts \\ []),
+    do: ThreadWorker.enqueue_message(thread_id, content, opts)
+
   @spec queue_message(String.t(), String.t() | [map()], keyword()) ::
           {:ok, [map()]} | {:error, term()}
   def queue_message(thread_id, content, opts \\ []),

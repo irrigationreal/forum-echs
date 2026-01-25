@@ -12,15 +12,40 @@ defmodule EchsServer.Router do
   plug(:match)
 
   plug(Plug.Parsers,
-    parsers: [:json],
-    pass: ["application/json"],
-    json_decoder: Jason
+    parsers: [:urlencoded, :multipart, :json],
+    pass: ["application/json", "multipart/form-data", "application/x-www-form-urlencoded"],
+    json_decoder: Jason,
+    length: 10_000_000
   )
 
   plug(:dispatch)
 
   get "/healthz" do
     JSON.send_json(conn, 200, %{ok: true})
+  end
+
+  get "/openapi.json" do
+    JSON.send_json(conn, 200, EchsProtocol.V1.OpenAPI.spec())
+  end
+
+  # --- Uploads
+
+  post "/v1/uploads" do
+    params = conn.body_params || %{}
+
+    case Map.get(params, "file") do
+      %Plug.Upload{} = upload ->
+        case EchsServer.Uploads.prepare_image(upload) do
+          {:ok, payload} ->
+            JSON.send_json(conn, 201, payload)
+
+          {:error, reason} ->
+            JSON.send_error(conn, 400, "upload failed", %{reason: inspect(reason)})
+        end
+
+      _ ->
+        JSON.send_error(conn, 400, "missing file", %{field: "file"})
+    end
   end
 
   # --- Threads
@@ -57,7 +82,17 @@ defmodule EchsServer.Router do
         {{:"$1", :_, :_}, [], [:"$1"]}
       ])
 
-    JSON.send_json(conn, 200, %{threads: ids})
+    threads =
+      ids
+      |> Enum.map(fn id ->
+        case safe_get_state(id) do
+          {:ok, state} -> sanitize_state(state)
+          :not_found -> nil
+        end
+      end)
+      |> Enum.reject(&is_nil/1)
+
+    JSON.send_json(conn, 200, %{threads: threads})
   end
 
   get "/v1/threads/:thread_id" do
@@ -89,6 +124,7 @@ defmodule EchsServer.Router do
 
     mode = params["mode"] || "queue"
     configure = normalize_config(params["configure"] || %{})
+    message_id = params["message_id"]
 
     content =
       cond do
@@ -109,16 +145,20 @@ defmodule EchsServer.Router do
       []
       |> Keyword.put(:mode, mode)
       |> Keyword.put(:configure, configure)
+      |> maybe_put_kw(:message_id, message_id)
 
-    case safe_send_message(thread_id, content, opts) do
-      {:ok, history_items} ->
-        JSON.send_json(conn, 200, %{ok: true, history_items: history_items})
+    case safe_enqueue_message(thread_id, content, opts) do
+      {:ok, message_id} ->
+        JSON.send_json(conn, 202, %{ok: true, thread_id: thread_id, message_id: message_id})
 
       {:error, :not_found} ->
         JSON.send_error(conn, 404, "thread not found")
 
+      {:error, :paused} ->
+        JSON.send_error(conn, 409, "thread is paused")
+
       {:error, reason} ->
-        JSON.send_error(conn, 500, "send_message failed", %{reason: inspect(reason)})
+        JSON.send_error(conn, 500, "enqueue_message failed", %{reason: inspect(reason)})
     end
   end
 
@@ -246,9 +286,9 @@ defmodule EchsServer.Router do
     end
   end
 
-  defp safe_send_message(thread_id, content, opts) do
+  defp safe_enqueue_message(thread_id, content, opts) do
     try do
-      EchsCore.send_message(thread_id, content, opts)
+      EchsCore.enqueue_message(thread_id, content, opts)
     catch
       :exit, _ -> {:error, :not_found}
     end
@@ -292,12 +332,28 @@ defmodule EchsServer.Router do
     %{
       thread_id: state.thread_id,
       parent_thread_id: state.parent_thread_id,
+      created_at: iso8601(state.created_at_ms),
+      last_activity_at: iso8601(state.last_activity_at_ms),
       model: state.model,
       reasoning: state.reasoning,
       cwd: state.cwd,
       status: state.status,
+      current_message_id: state.current_message_id,
+      current_turn_started_at: iso8601(state.current_turn_started_at_ms),
+      queued_turns: length(state.queued_turns),
+      steer_queue: length(state.steer_queue),
+      history_items: length(state.history_items),
+      coordination_mode: state.coordination_mode,
       tools: Enum.map(state.tools, fn t -> Map.get(t, "name") || Map.get(t, "type") end),
       children: Map.keys(state.children)
     }
+  end
+
+  defp iso8601(nil), do: nil
+
+  defp iso8601(ms) when is_integer(ms) and ms >= 0 do
+    ms
+    |> DateTime.from_unix!(:millisecond)
+    |> DateTime.to_iso8601()
   end
 end
