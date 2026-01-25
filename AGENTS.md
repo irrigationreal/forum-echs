@@ -232,6 +232,7 @@ Built-in tools provided by default (see `EchsCore.ThreadWorker.default_tools/0`)
 - `list_dir` - list directory with `depth`/`limit`
 - `grep_files` - regex search across paths (simple include/exclude globs)
 - `apply_patch` - apply the Codex "*** Begin Patch" format
+- `view_image` - attach a local image path to context as an `input_image` (base64 data URL)
 - sub-agent tools:
   - `spawn_agent`, `send_to_agent`, `wait_agents`, `kill_agent`
   - `blackboard_write`, `blackboard_read`

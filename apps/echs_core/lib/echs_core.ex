@@ -8,15 +8,18 @@ defmodule EchsCore do
   @spec create_thread(keyword()) :: {:ok, String.t()} | {:error, term()}
   def create_thread(opts \\ []), do: ThreadWorker.create(opts)
 
-  @spec send_message(String.t(), String.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
+  @spec send_message(String.t(), String.t() | [map()], keyword()) ::
+          {:ok, [map()]} | {:error, term()}
   def send_message(thread_id, content, opts \\ []),
     do: ThreadWorker.send_message(thread_id, content, opts)
 
-  @spec queue_message(String.t(), String.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
+  @spec queue_message(String.t(), String.t() | [map()], keyword()) ::
+          {:ok, [map()]} | {:error, term()}
   def queue_message(thread_id, content, opts \\ []),
     do: ThreadWorker.send_message(thread_id, content, Keyword.put(opts, :mode, :queue))
 
-  @spec steer_message(String.t(), String.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
+  @spec steer_message(String.t(), String.t() | [map()], keyword()) ::
+          {:ok, [map()]} | {:error, term()}
   def steer_message(thread_id, content, opts \\ []),
     do: ThreadWorker.send_message(thread_id, content, Keyword.put(opts, :mode, :steer))
 

@@ -164,7 +164,7 @@ defmodule EchsCore.ThreadWorker do
     - :steer - legacy boolean, treated as :mode => :steer.
     - :configure - config map to apply for this turn.
   """
-  @spec send_message(thread_id(), String.t(), keyword()) ::
+  @spec send_message(thread_id(), String.t() | [map()], keyword()) ::
           {:ok, [history_item()]} | {:error, term()}
   def send_message(thread_id, content, opts \\ []) do
     GenServer.call(via_tuple(thread_id), {:send_message, content, opts}, :infinity)
@@ -723,7 +723,7 @@ defmodule EchsCore.ThreadWorker do
 
   defp apply_turn_config(state, _opts), do: state
 
-  defp add_user_message(state, content) do
+  defp add_user_message(state, content) when is_binary(content) do
     user_item = %{
       "type" => "message",
       "role" => "user",
@@ -732,6 +732,42 @@ defmodule EchsCore.ThreadWorker do
 
     %{state | history_items: state.history_items ++ [user_item], status: :running}
   end
+
+  defp add_user_message(state, content) when is_list(content) do
+    content_items =
+      content
+      |> Enum.map(&normalize_message_content_item/1)
+      |> Enum.reject(&is_nil/1)
+
+    user_item = %{
+      "type" => "message",
+      "role" => "user",
+      "content" => content_items
+    }
+
+    %{state | history_items: state.history_items ++ [user_item], status: :running}
+  end
+
+  defp add_user_message(state, _content) do
+    add_user_message(state, "")
+  end
+
+  defp normalize_message_content_item(item) when is_map(item) do
+    normalized =
+      Enum.reduce(item, %{}, fn {k, v}, acc ->
+        Map.put(acc, to_string(k), v)
+      end)
+
+    case normalized do
+      %{"type" => type} when is_binary(type) and type != "" ->
+        normalized
+
+      _ ->
+        nil
+    end
+  end
+
+  defp normalize_message_content_item(_item), do: nil
 
   defp enqueue_turn(state, from, content, opts) do
     turn = %{from: from, content: content, opts: opts}
@@ -947,6 +983,9 @@ defmodule EchsCore.ThreadWorker do
       "apply_patch" ->
         {Tools.ApplyPatch.apply(args["patch"], cwd: state.cwd), state}
 
+      "view_image" ->
+        attach_image(state, args)
+
       "spawn_agent" ->
         spawn_subagent(state, args)
 
@@ -967,6 +1006,27 @@ defmodule EchsCore.ThreadWorker do
 
       _ ->
         execute_custom_tool(state, name, args)
+    end
+  end
+
+  defp attach_image(state, args) do
+    path = args["path"] || args["file_path"] || ""
+
+    case Tools.ViewImage.build_message_item(path, cwd: state.cwd) do
+      {:ok, message_item} ->
+        {"attached local image", %{state | history_items: state.history_items ++ [message_item]}}
+
+      {:error, {:too_large, size, max_bytes}} ->
+        msg = "image too large (#{size} bytes > #{max_bytes} bytes): #{path}"
+        {{:error, msg}, state}
+
+      {:error, {:not_a_file, type}} ->
+        msg = "image path is not a file (#{inspect(type)}): #{path}"
+        {{:error, msg}, state}
+
+      {:error, reason} ->
+        msg = "unable to attach image #{path}: #{inspect(reason)}"
+        {{:error, msg}, state}
     end
   end
 
@@ -1377,6 +1437,7 @@ defmodule EchsCore.ThreadWorker do
     else
       case name do
         "shell" -> tools ++ [Tools.Shell.spec()]
+        "view_image" -> tools ++ [Tools.ViewImage.spec()]
         "read_file" -> tools ++ [Tools.Files.read_file_spec()]
         "list_dir" -> tools ++ [Tools.Files.list_dir_spec()]
         "grep_files" -> tools ++ [Tools.Files.grep_files_spec()]
@@ -1406,6 +1467,7 @@ defmodule EchsCore.ThreadWorker do
       Enum.flat_map(names, fn name ->
         case name do
           "shell" -> [Tools.Shell.spec()]
+          "view_image" -> [Tools.ViewImage.spec()]
           # Already included
           "local_shell" -> []
           # Already included
@@ -1470,6 +1532,7 @@ defmodule EchsCore.ThreadWorker do
       Tools.Files.list_dir_spec(),
       Tools.Files.grep_files_spec(),
       Tools.ApplyPatch.spec(),
+      Tools.ViewImage.spec(),
       Tools.SubAgent.spawn_spec(),
       Tools.SubAgent.send_spec(),
       Tools.SubAgent.wait_spec(),

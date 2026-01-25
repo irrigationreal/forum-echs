@@ -102,6 +102,7 @@ including:
 - Patching: `apply_patch` (Codex "*** Begin Patch" format)
 - Sub-agents: `spawn_agent`, `send_to_agent`, `wait_agents`, `kill_agent`
 - Coordination: `blackboard_write`, `blackboard_read`
+- Images: `view_image` (attach a local image path to context as an `input_image`)
 
 ### Custom Tools
 
@@ -120,6 +121,22 @@ handler = fn args, ctx ->
 end
 
 :ok = EchsCore.register_tool(thread_id, spec, handler)
+```
+
+### Sending Images (User Input)
+
+The Responses API supports multi-part message content. In ECHS you can pass a
+list of content items instead of a plain string:
+
+```elixir
+image_url = "data:image/png;base64,..."  # or https://...
+
+items = [
+  %{"type" => "input_text", "text" => "What is in this screenshot?"},
+  %{"type" => "input_image", "image_url" => image_url}
+]
+
+{:ok, _} = EchsCore.send_message(thread_id, items)
 ```
 
 ## Auth / Codex Client (echs_codex)
