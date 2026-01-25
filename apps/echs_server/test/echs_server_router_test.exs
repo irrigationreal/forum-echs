@@ -1,5 +1,5 @@
 defmodule EchsServer.RouterTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
   import Plug.Conn
   import Plug.Test
 
@@ -8,6 +8,20 @@ defmodule EchsServer.RouterTest do
   setup do
     {:ok, _} = Application.ensure_all_started(:echs_core)
     {:ok, _} = Application.ensure_all_started(:echs_codex)
+
+    tmp =
+      Path.join(
+        System.tmp_dir!(),
+        "echs_uploads_test_" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    System.put_env("ECHS_UPLOAD_DIR", tmp)
+
+    on_exit(fn ->
+      System.delete_env("ECHS_UPLOAD_DIR")
+      File.rm_rf(tmp)
+    end)
+
     :ok
   end
 
@@ -28,7 +42,7 @@ defmodule EchsServer.RouterTest do
     assert get_in(body, ["paths", "/v1/threads"])
   end
 
-  test "uploads accepts multipart image" do
+  test "uploads accepts multipart image (handle mode by default)" do
     boundary = "----echs-test-boundary"
     bytes = "not really a png"
 
@@ -55,8 +69,42 @@ defmodule EchsServer.RouterTest do
 
     resp = Jason.decode!(conn.resp_body)
     assert resp["kind"] == "image"
+    assert resp["upload_id"]
+    assert resp["image_url"] == nil
+    assert resp["content"]["type"] == "input_image"
+    assert resp["content"]["upload_id"] == resp["upload_id"]
+  end
+
+  test "uploads can inline as data url" do
+    boundary = "----echs-test-boundary"
+    bytes = "not really a png"
+
+    body =
+      [
+        "--",
+        boundary,
+        "\r\n",
+        "Content-Disposition: form-data; name=\"file\"; filename=\"test.png\"\r\n",
+        "Content-Type: image/png\r\n\r\n",
+        bytes,
+        "\r\n--",
+        boundary,
+        "--\r\n"
+      ]
+      |> IO.iodata_to_binary()
+
+    conn =
+      conn(:post, "/v1/uploads?inline=1", body)
+      |> put_req_header("content-type", "multipart/form-data; boundary=#{boundary}")
+
+    conn = Router.call(conn, [])
+    assert conn.status == 201
+
+    resp = Jason.decode!(conn.resp_body)
+    assert resp["kind"] == "image"
     assert String.starts_with?(resp["image_url"], "data:image/png;base64,")
     assert resp["content"]["type"] == "input_image"
+    assert String.starts_with?(resp["content"]["image_url"], "data:image/png;base64,")
   end
 
   test "create thread and fetch state" do

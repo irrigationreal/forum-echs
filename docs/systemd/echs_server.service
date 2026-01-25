@@ -1,0 +1,34 @@
+[Unit]
+Description=ECHS (Elixir Codex Harness Server)
+After=network.target
+
+[Service]
+Type=simple
+
+# Adjust these to match where you install the release.
+WorkingDirectory=/opt/echs
+ExecStart=/opt/echs/bin/echs_server foreground
+Restart=on-failure
+RestartSec=2
+
+# Daemon configuration
+Environment=ECHS_BIND=0.0.0.0
+Environment=ECHS_PORT=4000
+# If set, requires clients to send: Authorization: Bearer <token>
+# Environment=ECHS_API_TOKEN=change-me
+
+# Optional: file uploads directory (for /v1/uploads handle mode)
+Environment=ECHS_UPLOAD_DIR=/var/lib/echs/uploads
+
+# Optional: logging (see config/runtime.exs)
+Environment=LOG_LEVEL=info
+
+# Hardening (tweak based on your needs)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
+

@@ -31,11 +31,13 @@ defmodule EchsServer.Router do
   # --- Uploads
 
   post "/v1/uploads" do
+    conn = fetch_query_params(conn)
     params = conn.body_params || %{}
+    inline? = parse_bool(conn.query_params["inline"] || params["inline"])
 
     case Map.get(params, "file") do
       %Plug.Upload{} = upload ->
-        case EchsServer.Uploads.prepare_image(upload) do
+        case EchsServer.Uploads.prepare_image(upload, inline: inline?) do
           {:ok, payload} ->
             JSON.send_json(conn, 201, payload)
 
@@ -126,39 +128,33 @@ defmodule EchsServer.Router do
     configure = normalize_config(params["configure"] || %{})
     message_id = params["message_id"]
 
-    content =
-      cond do
-        is_binary(params["content"]) ->
-          params["content"]
+    with :ok <- validate_id_optional("message_id", message_id),
+         {:ok, content} <- extract_and_normalize_content(params) do
+      opts =
+        []
+        |> Keyword.put(:mode, mode)
+        |> Keyword.put(:configure, configure)
+        |> maybe_put_kw(:message_id, message_id)
 
-        is_list(params["content"]) ->
-          params["content"]
+      case safe_enqueue_message(thread_id, content, opts) do
+        {:ok, message_id} ->
+          JSON.send_json(conn, 202, %{ok: true, thread_id: thread_id, message_id: message_id})
 
-        is_binary(params["text"]) ->
-          params["text"]
+        {:error, :not_found} ->
+          JSON.send_error(conn, 404, "thread not found")
 
-        true ->
-          ""
+        {:error, :paused} ->
+          JSON.send_error(conn, 409, "thread is paused")
+
+        {:error, reason} ->
+          JSON.send_error(conn, 500, "enqueue_message failed", %{reason: inspect(reason)})
       end
+    else
+      {:error, {:invalid_id, field, detail}} ->
+        JSON.send_error(conn, 400, "invalid #{field}", %{details: detail})
 
-    opts =
-      []
-      |> Keyword.put(:mode, mode)
-      |> Keyword.put(:configure, configure)
-      |> maybe_put_kw(:message_id, message_id)
-
-    case safe_enqueue_message(thread_id, content, opts) do
-      {:ok, message_id} ->
-        JSON.send_json(conn, 202, %{ok: true, thread_id: thread_id, message_id: message_id})
-
-      {:error, :not_found} ->
-        JSON.send_error(conn, 404, "thread not found")
-
-      {:error, :paused} ->
-        JSON.send_error(conn, 409, "thread is paused")
-
-      {:error, reason} ->
-        JSON.send_error(conn, 500, "enqueue_message failed", %{reason: inspect(reason)})
+      {:error, {:invalid_content, reason}} ->
+        JSON.send_error(conn, 400, "invalid content", %{reason: inspect(reason)})
     end
   end
 
@@ -277,6 +273,85 @@ defmodule EchsServer.Router do
       Map.put(acc, to_string(k), v)
     end)
   end
+
+  defp parse_bool(value) when value in [true, "true", "1", 1, "yes", "on"], do: true
+  defp parse_bool(_), do: false
+
+  defp validate_id_optional(_field, nil), do: :ok
+  defp validate_id_optional(_field, ""), do: :ok
+
+  defp validate_id_optional(field, value) when is_binary(value) do
+    cond do
+      byte_size(value) > 256 ->
+        {:error, {:invalid_id, field, %{reason: "too long", max_bytes: 256}}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_id_optional(field, other) do
+    {:error, {:invalid_id, field, %{reason: "expected string", got: inspect(other)}}}
+  end
+
+  defp extract_and_normalize_content(params) when is_map(params) do
+    content =
+      cond do
+        is_binary(params["content"]) ->
+          params["content"]
+
+        is_list(params["content"]) ->
+          params["content"]
+
+        is_binary(params["text"]) ->
+          params["text"]
+
+        true ->
+          ""
+      end
+
+    case content do
+      items when is_list(items) ->
+        case resolve_uploads_in_content(items) do
+          {:ok, resolved} -> {:ok, resolved}
+          {:error, reason} -> {:error, {:invalid_content, reason}}
+        end
+
+      other ->
+        {:ok, other}
+    end
+  end
+
+  defp resolve_uploads_in_content(items) when is_list(items) do
+    items
+    |> Enum.reduce_while({:ok, []}, fn item, {:ok, acc} ->
+      item = if is_map(item), do: stringify_keys(item), else: item
+
+      cond do
+        is_map(item) and item["type"] == "input_image" and is_binary(item["upload_id"]) and
+            item["image_url"] in [nil, ""] ->
+          case EchsServer.Uploads.image_url(item["upload_id"]) do
+            {:ok, image_url} ->
+              {:cont, {:ok, [Map.put(item, "image_url", image_url) | acc]}}
+
+            {:error, :not_found} ->
+              {:halt, {:error, {:upload_not_found, item["upload_id"]}}}
+
+            {:error, reason} ->
+              {:halt, {:error, {:upload_error, item["upload_id"], reason}}}
+          end
+
+        true ->
+          {:cont, {:ok, [item | acc]}}
+      end
+    end)
+    |> case do
+      {:ok, acc} -> {:ok, Enum.reverse(acc)}
+      {:error, _} = err -> err
+    end
+  end
+
+  defp resolve_uploads_in_content(_), do: {:ok, []}
 
   defp safe_get_state(thread_id) do
     try do

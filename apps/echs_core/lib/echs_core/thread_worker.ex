@@ -82,6 +82,8 @@ defmodule EchsCore.ThreadWorker do
     :status,
     :current_message_id,
     :current_turn_started_at_ms,
+    :message_ids,
+    :message_id_set,
     :children,
     :coordination_mode,
     :blackboard,
@@ -132,6 +134,8 @@ defmodule EchsCore.ThreadWorker do
           status: :idle | :running | :paused,
           current_message_id: String.t() | nil,
           current_turn_started_at_ms: non_neg_integer() | nil,
+          message_ids: [String.t()],
+          message_id_set: MapSet.t(),
           children: %{optional(thread_id()) => child_info()},
           coordination_mode: :hierarchical | :blackboard | :peer,
           blackboard: pid(),
@@ -307,6 +311,8 @@ defmodule EchsCore.ThreadWorker do
       status: :idle,
       current_message_id: nil,
       current_turn_started_at_ms: nil,
+      message_ids: [],
+      message_id_set: MapSet.new(),
       children: %{},
       coordination_mode: Keyword.get(opts, :coordination_mode, :hierarchical),
       blackboard: blackboard,
@@ -339,34 +345,44 @@ defmodule EchsCore.ThreadWorker do
     mode = send_mode(opts)
     message_id = message_id_for_turn(state, opts)
 
-    state =
-      case mode do
-        :steer -> enqueue_steer(state, nil, content, opts, message_id, preserve_reply?: false)
-        _ -> enqueue_turn(state, nil, content, opts, message_id)
-      end
+    if MapSet.member?(state.message_id_set, message_id) do
+      {:reply, {:ok, message_id}, touch(state)}
+    else
+      state = remember_message_id(state, message_id)
 
-    state =
-      case mode do
-        :steer -> request_stream_control(state, :steer)
-        _ -> state
-      end
+      state =
+        case mode do
+          :steer -> enqueue_steer(state, nil, content, opts, message_id, preserve_reply?: false)
+          _ -> enqueue_turn(state, nil, content, opts, message_id)
+        end
 
-    {:reply, {:ok, message_id}, state}
+      state =
+        case mode do
+          :steer -> request_stream_control(state, :steer)
+          _ -> state
+        end
+
+      {:reply, {:ok, message_id}, state}
+    end
   end
 
   def handle_call({:enqueue_message, content, opts}, _from, state) do
     message_id = message_id_for_turn(state, opts)
 
-    state =
-      state
-      |> begin_turn(message_id)
-      |> apply_turn_config(opts)
-      |> add_user_message(content)
+    if MapSet.member?(state.message_id_set, message_id) do
+      {:reply, {:ok, message_id}, touch(state)}
+    else
+      state =
+        state
+        |> begin_turn(message_id)
+        |> apply_turn_config(opts)
+        |> add_user_message(content)
 
-    broadcast(state, :turn_started, %{thread_id: state.thread_id})
-    state = start_stream(state)
+      broadcast(state, :turn_started, %{thread_id: state.thread_id})
+      state = start_stream(state)
 
-    {:reply, {:ok, message_id}, state}
+      {:reply, {:ok, message_id}, state}
+    end
   end
 
   @impl true
@@ -1693,9 +1709,43 @@ defmodule EchsCore.ThreadWorker do
     message_id_for_turn(state, [])
   end
 
+  @max_message_ids 1_000
+
   defp begin_turn(state, message_id) when is_binary(message_id) and message_id != "" do
-    %{state | current_message_id: message_id, current_turn_started_at_ms: now_ms()}
+    state
+    |> remember_message_id(message_id)
+    |> Map.put(:current_message_id, message_id)
+    |> Map.put(:current_turn_started_at_ms, now_ms())
     |> touch()
+  end
+
+  defp remember_message_id(state, message_id) when is_binary(message_id) and message_id != "" do
+    if MapSet.member?(state.message_id_set, message_id) do
+      state
+    else
+      message_ids = state.message_ids ++ [message_id]
+      message_id_set = MapSet.put(state.message_id_set, message_id)
+
+      {message_ids, message_id_set} = trim_message_id_cache(message_ids, message_id_set)
+      %{state | message_ids: message_ids, message_id_set: message_id_set}
+    end
+  end
+
+  defp remember_message_id(state, _message_id), do: state
+
+  defp trim_message_id_cache(message_ids, message_id_set) do
+    extra = length(message_ids) - @max_message_ids
+
+    if extra > 0 do
+      {dropped, kept} = Enum.split(message_ids, extra)
+
+      message_id_set =
+        Enum.reduce(dropped, message_id_set, fn id, acc -> MapSet.delete(acc, id) end)
+
+      {kept, message_id_set}
+    else
+      {message_ids, message_id_set}
+    end
   end
 
   defp touch(state) do

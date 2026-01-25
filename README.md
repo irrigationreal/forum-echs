@@ -51,6 +51,8 @@ Environment variables:
 - `ECHS_BIND` (default: `0.0.0.0`)
 - `ECHS_PORT` (default: `4000`)
 - `ECHS_API_TOKEN` (optional) - if set, requires `Authorization: Bearer <token>`
+- `ECHS_UPLOAD_DIR` (default: `/tmp/echs_uploads`) - where `/v1/uploads` stores files
+- `LOG_LEVEL` (default: `info`) - release runtime logger level (see `config/runtime.exs`)
 
 Run locally:
 
@@ -72,6 +74,38 @@ curl -s http://127.0.0.1:4000/openapi.json | jq .
 # Or write a file:
 mix echs.openapi --out openapi.json
 ```
+
+## Deploying (Release + systemd)
+
+ECHS is designed to run as a long-lived daemon on a server.
+
+Build a release (from the umbrella root):
+
+```bash
+mix deps.get
+MIX_ENV=prod mix release echs_server
+```
+
+The release output will be under:
+
+- `_build/prod/rel/echs_server/`
+
+Run it directly:
+
+```bash
+_build/prod/rel/echs_server/bin/echs_server foreground
+```
+
+For `systemd`, see the example unit file:
+
+- `docs/systemd/echs_server.service`
+
+Notes:
+
+- `echs_codex` reads credentials from `~/.codex/auth.json`, so make sure the
+  service user has run `codex login` (or otherwise has that auth file).
+- Uploads (for `/v1/uploads` handle mode) are stored on disk. Configure the
+  directory with `ECHS_UPLOAD_DIR` (defaults to `/tmp/echs_uploads`).
 
 ## HTTP API (REST + SSE)
 
@@ -173,8 +207,11 @@ data: {"thread_id":"...","message_id":"msg_...","content":"..."}
 ECHS supports `input_image` content items. The easiest way to construct those
 from a client is:
 
-1) `POST /v1/uploads` (multipart) to get a base64 `data:` URL + a ready content item
-2) Send a message with `content: [ ... ]` including that `input_image`
+1) `POST /v1/uploads` (multipart) to get an `upload_id` + a content item handle
+2) Send a message with `content: [ ... ]` including that `input_image` handle
+
+The server will expand `upload_id` to a base64 `data:` URL before calling the
+Codex API, so clients do not need to send base64 in every request.
 
 Upload:
 
@@ -191,9 +228,17 @@ curl -s -X POST http://127.0.0.1:4000/v1/threads/<thread_id>/messages \\
   -d '{
     "content": [
       {"type": "input_text", "text": "Describe this image"},
-      {"type": "input_image", "image_url": "data:image/png;base64,...."}
+      {"type": "input_image", "upload_id": "upl_..."}
     ]
   }'
+```
+
+If you want an inline `data:` URL in the upload response (useful for debugging),
+pass `inline=1`:
+
+```bash
+curl -s -X POST 'http://127.0.0.1:4000/v1/uploads?inline=1' \\
+  -F file=@/path/to/image.png | jq -r .image_url
 ```
 
 

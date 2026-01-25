@@ -22,4 +22,3 @@ defmodule Mix.Tasks.Echs.Openapi do
     Mix.shell().info("Wrote #{out_path}")
   end
 end
-

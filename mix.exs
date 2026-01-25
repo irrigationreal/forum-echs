@@ -7,7 +7,8 @@ defmodule Echs.MixProject do
       version: "0.1.0",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      aliases: aliases()
+      aliases: aliases(),
+      releases: releases()
     ]
   end
 
@@ -21,6 +22,20 @@ defmodule Echs.MixProject do
   defp aliases do
     [
       setup: ["deps.get"]
+    ]
+  end
+
+  defp releases do
+    [
+      echs_server: [
+        applications: [
+          echs_server: :permanent,
+          echs_core: :permanent,
+          echs_codex: :permanent,
+          echs_protocol: :permanent,
+          runtime_tools: :permanent
+        ]
+      ]
     ]
   end
 end

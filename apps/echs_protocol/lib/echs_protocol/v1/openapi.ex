@@ -39,7 +39,11 @@ defmodule EchsProtocol.V1.OpenAPI do
         get: %{
           summary: "Health check",
           responses: %{
-            "200" => json_response("OK", %{"type" => "object", "properties" => %{"ok" => %{"type" => "boolean"}}})
+            "200" =>
+              json_response("OK", %{
+                "type" => "object",
+                "properties" => %{"ok" => %{"type" => "boolean"}}
+              })
           }
         }
       },
@@ -51,7 +55,17 @@ defmodule EchsProtocol.V1.OpenAPI do
       },
       "/v1/uploads" => %{
         post: %{
-          summary: "Upload an image and get an input_image content item",
+          summary: "Upload an image and get an input_image content item (handle or inline)",
+          parameters: [
+            %{
+              name: "inline",
+              in: "query",
+              required: false,
+              schema: %{type: "boolean"},
+              description:
+                "If true, returns a base64 data: URL in image_url and a ready-to-inline content item. Default is false (handle mode)."
+            }
+          ],
           requestBody: %{
             required: true,
             content: %{
@@ -148,14 +162,22 @@ defmodule EchsProtocol.V1.OpenAPI do
             }
           },
           responses: %{
-            "200" => json_response("Updated", %{"type" => "object", "properties" => %{"ok" => %{"type" => "boolean"}}}),
+            "200" =>
+              json_response("Updated", %{
+                "type" => "object",
+                "properties" => %{"ok" => %{"type" => "boolean"}}
+              }),
             "404" => json_error_response("Thread not found")
           }
         },
         delete: %{
           summary: "Kill a thread",
           responses: %{
-            "200" => json_response("Killed", %{"type" => "object", "properties" => %{"ok" => %{"type" => "boolean"}}}),
+            "200" =>
+              json_response("Killed", %{
+                "type" => "object",
+                "properties" => %{"ok" => %{"type" => "boolean"}}
+              }),
             "404" => json_error_response("Thread not found")
           }
         }
@@ -241,7 +263,10 @@ defmodule EchsProtocol.V1.OpenAPI do
         summary: summary,
         responses: %{
           "200" =>
-            json_response("OK", %{"type" => "object", "properties" => %{"ok" => %{"type" => "boolean"}}}),
+            json_response("OK", %{
+              "type" => "object",
+              "properties" => %{"ok" => %{"type" => "boolean"}}
+            }),
           "404" => json_error_response("Thread not found")
         }
       }
@@ -276,7 +301,8 @@ defmodule EchsProtocol.V1.OpenAPI do
           coordination_mode: %{type: "string", enum: ["hierarchical", "blackboard", "peer"]},
           tools: %{
             type: "array",
-            description: "Tool patch list like ['-apply_patch', '+shell'] or full tool specs as objects.",
+            description:
+              "Tool patch list like ['-apply_patch', '+shell'] or full tool specs as objects.",
             items: %{oneOf: [%{type: "string"}, %{type: "object"}]}
           }
         },
@@ -301,7 +327,9 @@ defmodule EchsProtocol.V1.OpenAPI do
           reasoning: %{type: "string"},
           cwd: %{type: "string"},
           status: %{type: "string", enum: ["idle", "running", "paused"]},
-          current_message_id: %{oneOf: [%{"$ref" => "#/components/schemas/MessageId"}, %{type: "null"}]},
+          current_message_id: %{
+            oneOf: [%{"$ref" => "#/components/schemas/MessageId"}, %{type: "null"}]
+          },
           current_turn_started_at: %{"$ref" => "#/components/schemas/ISO8601"},
           queued_turns: %{type: "integer"},
           steer_queue: %{type: "integer"},
@@ -347,7 +375,8 @@ defmodule EchsProtocol.V1.OpenAPI do
         properties: %{
           type: %{type: "string"},
           text: %{type: "string"},
-          image_url: %{type: "string"}
+          image_url: %{type: "string"},
+          upload_id: %{type: "string"}
         },
         additionalProperties: true
       },
@@ -356,7 +385,10 @@ defmodule EchsProtocol.V1.OpenAPI do
         properties: %{
           mode: %{type: "string", enum: ["queue", "steer"]},
           message_id: %{"$ref" => "#/components/schemas/MessageId"},
-          configure: %{type: "object", additionalProperties: %{"$ref" => "#/components/schemas/JSONValue"}},
+          configure: %{
+            type: "object",
+            additionalProperties: %{"$ref" => "#/components/schemas/JSONValue"}
+          },
           content: %{
             description:
               "Either a plain string, or a list of Responses content items (e.g. input_text + input_image).",
@@ -365,7 +397,10 @@ defmodule EchsProtocol.V1.OpenAPI do
               %{type: "array", items: %{"$ref" => "#/components/schemas/MessageContentItem"}}
             ]
           },
-          text: %{type: "string", description: "Legacy alias for content when content is a string"}
+          text: %{
+            type: "string",
+            description: "Legacy alias for content when content is a string"
+          }
         },
         additionalProperties: false
       },
@@ -387,17 +422,20 @@ defmodule EchsProtocol.V1.OpenAPI do
           bytes: %{type: "integer"},
           filename: %{type: "string"},
           content_type: %{type: "string"},
-          image_url: %{type: "string"},
+          image_url: %{type: ["string", "null"]},
           content: %{"$ref" => "#/components/schemas/MessageContentItem"}
         },
-        required: ["upload_id", "kind", "bytes", "content_type", "image_url", "content"],
+        required: ["upload_id", "kind", "bytes", "content_type", "content"],
         additionalProperties: false
       },
       ErrorResponse: %{
         type: "object",
         properties: %{
           error: %{type: "string"},
-          details: %{type: "object", additionalProperties: %{"$ref" => "#/components/schemas/JSONValue"}}
+          details: %{
+            type: "object",
+            additionalProperties: %{"$ref" => "#/components/schemas/JSONValue"}
+          }
         },
         required: ["error"],
         additionalProperties: false
@@ -427,4 +465,3 @@ defmodule EchsProtocol.V1.OpenAPI do
     }
   end
 end
-
