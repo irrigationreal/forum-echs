@@ -21,6 +21,7 @@ This repo is meant to be:
 - `echs_core` — thread runtime, tools, PubSub events, and blackboard.
 - `echs_codex` — Codex API auth and streaming client.
 - `echs_cli` — interactive CLI for local runs.
+- `echs_server` — HTTP daemon (REST + SSE) exposing a wire interface.
 - `echs_protocol` — protocol definitions (currently minimal).
 
 ## Quickstart (Local)
@@ -40,6 +41,107 @@ mix test
 mix run -e 'EchsCli.main()'
 mix run -e 'EchsCli.main(["/path/to/workdir"])'
 ```
+
+## Running The Daemon (echs_server)
+
+`echs_server` is a small HTTP API intended to be run as a daemon on a server.
+
+Environment variables:
+
+- `ECHS_BIND` (default: `0.0.0.0`)
+- `ECHS_PORT` (default: `4000`)
+- `ECHS_API_TOKEN` (optional) - if set, requires `Authorization: Bearer <token>`
+
+Run locally:
+
+```bash
+ECHS_PORT=4000 ECHS_BIND=127.0.0.1 mix run --no-halt -e 'Application.ensure_all_started(:echs_server)'
+```
+
+Health check:
+
+```bash
+curl -s http://127.0.0.1:4000/healthz
+```
+
+## HTTP API (REST + SSE)
+
+This API is intentionally close to the Responses item model ECHS uses
+internally.
+
+### Create a thread (session)
+
+```bash
+curl -s -X POST http://127.0.0.1:4000/v1/threads \\
+  -H 'content-type: application/json' \\
+  -d '{
+    "cwd": "/tmp",
+    "model": "gpt-5.2-codex",
+    "reasoning": "medium",
+    "instructions": "Be concise"
+  }'
+```
+
+Response:
+
+```json
+{"thread_id":"thr_..."}
+```
+
+### Update thread configuration
+
+```bash
+curl -s -X PATCH http://127.0.0.1:4000/v1/threads/<thread_id> \\
+  -H 'content-type: application/json' \\
+  -d '{
+    "config": {
+      "instructions": "You are a careful reviewer. Ask clarifying questions.",
+      "reasoning": "high",
+      "tools": ["-apply_patch", "+shell", "+view_image"]
+    }
+  }'
+```
+
+Supported config keys today:
+
+- `cwd`, `model`, `reasoning`, `instructions`, `tools`
+
+### Send a message
+
+```bash
+curl -s -X POST http://127.0.0.1:4000/v1/threads/<thread_id>/messages \\
+  -H 'content-type: application/json' \\
+  -d '{
+    "mode": "queue",
+    "content": "Hello from the wire API"
+  }'
+```
+
+You can also supply `configure` to hot-swap settings before sending:
+
+```bash
+curl -s -X POST http://127.0.0.1:4000/v1/threads/<thread_id>/messages \\
+  -H 'content-type: application/json' \\
+  -d '{
+    "mode": "queue",
+    "configure": { "instructions": "Answer in JSON." },
+    "content": "Summarize the repo"
+  }'
+```
+
+### Stream events (SSE)
+
+```bash
+curl -N http://127.0.0.1:4000/v1/threads/<thread_id>/events
+```
+
+Events are emitted from `EchsCore.ThreadWorker` and sent as:
+
+```text
+event: turn_delta
+data: {"thread_id":"...","content":"..."}
+```
+
 
 ## Usage (As a Library)
 

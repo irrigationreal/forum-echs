@@ -44,6 +44,7 @@ apps/
   echs_core/      Thread runtime, tools, PubSub events, blackboard
   echs_codex/     Auth + streaming client for the responses endpoints
   echs_cli/       Minimal interactive CLI wired to echs_core + echs_codex
+  echs_server/    HTTP daemon (REST + SSE) exposing a wire interface
   echs_protocol/  Placeholder for future protocol/schema definitions
 config/config.exs Umbrella-wide config (currently minimal)
 blackboard.json   Not used by Elixir code in this repo (may be used externally)
@@ -332,6 +333,26 @@ Run it from the umbrella root:
 
 ```bash
 mix run -e 'EchsCli.main()'
+```
+
+## Server / Daemon (apps/echs_server)
+
+`echs_server` is a thin HTTP layer over `echs_core` providing a wire API
+(REST + SSE).
+
+Default bind:
+
+- `ECHS_BIND` (default: `0.0.0.0`)
+- `ECHS_PORT` (default: `4000`)
+
+Optional auth:
+
+- `ECHS_API_TOKEN` - require `Authorization: Bearer <token>` for all requests
+
+Start locally:
+
+```bash
+ECHS_PORT=4000 ECHS_BIND=127.0.0.1 mix run --no-halt -e 'Application.ensure_all_started(:echs_server)'
 ```
 
 ## Protocol (apps/echs_protocol)

@@ -18,3 +18,7 @@ import Config
 #       format: "$date $time [$level] $metadata$message\n",
 #       metadata: [:user_id]
 #
+
+# Avoid binding sockets during `mix test` by default.
+config :echs_server,
+  start_server: config_env() != :test
