@@ -1302,6 +1302,9 @@ defmodule EchsCore.ThreadWorker do
       "apply_patch" ->
         {Tools.ApplyPatch.apply(args["patch"], cwd: state.cwd), state}
 
+      name when is_binary(name) and String.starts_with?(name, "forum_") ->
+        {Tools.CodexForum.execute(name, args), state}
+
       "view_image" ->
         attach_image(state, args)
 
@@ -1761,6 +1764,12 @@ defmodule EchsCore.ThreadWorker do
         "list_dir" -> tools ++ [Tools.Files.list_dir_spec()]
         "grep_files" -> tools ++ [Tools.Files.grep_files_spec()]
         "apply_patch" -> tools ++ [Tools.ApplyPatch.spec()]
+        _ when String.starts_with?(name, "forum_") ->
+          case Tools.CodexForum.spec_by_name(name) do
+            nil -> tools
+            spec -> tools ++ [spec]
+          end
+
         _ -> tools
       end
     end
@@ -1801,6 +1810,12 @@ defmodule EchsCore.ThreadWorker do
           "blackboard_write" -> []
           # Already included
           "blackboard_read" -> []
+          _ when is_binary(name) and String.starts_with?(name, "forum_") ->
+            case Tools.CodexForum.spec_by_name(name) do
+              nil -> []
+              spec -> [spec]
+            end
+
           _ -> []
         end
       end)
@@ -1858,7 +1873,7 @@ defmodule EchsCore.ThreadWorker do
       Tools.SubAgent.blackboard_write_spec(),
       Tools.SubAgent.blackboard_read_spec(),
       Tools.SubAgent.kill_spec()
-    ])
+    ] ++ Tools.CodexForum.specs())
   end
 
   defp config_summary(state) do
