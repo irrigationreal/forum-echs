@@ -7,13 +7,19 @@ defmodule EchsServer.Application do
 
   @impl true
   def start(_type, _args) do
+    base_children = [
+      {Registry, keys: :unique, name: EchsServer.ThreadEventRegistry},
+      {DynamicSupervisor, strategy: :one_for_one, name: EchsServer.ThreadEventSupervisor}
+    ]
+
     children =
       if Application.get_env(:echs_server, :start_server, true) do
-        [
-          {Bandit, bandit_options()}
-        ]
+        base_children ++
+          [
+            {Bandit, bandit_options()}
+          ]
       else
-        []
+        base_children
       end
 
     opts = [strategy: :one_for_one, name: EchsServer.Supervisor]

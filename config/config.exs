@@ -23,6 +23,9 @@ import Config
 config :echs_server,
   start_server: config_env() != :test
 
+config :echs_core,
+  max_concurrent_turns: 10
+
 # SQLite-backed persistence used by the daemon. In tests we use a single
 # in-memory connection for determinism.
 config :echs_store,

@@ -21,6 +21,9 @@ defmodule EchsCore.Application do
       # Exec session manager (UnifiedExec-style sessions; port-backed stdio)
       {EchsCore.Tools.Exec, name: EchsCore.Tools.Exec},
 
+      # Global concurrency limiter for turns
+      {EchsCore.TurnLimiter, name: EchsCore.TurnLimiter},
+
       # PubSub for events
       {Phoenix.PubSub, name: EchsCore.PubSub}
     ]

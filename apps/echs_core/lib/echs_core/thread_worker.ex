@@ -95,7 +95,9 @@ defmodule EchsCore.ThreadWorker do
     :pending_interrupts,
     :queued_turns,
     :steer_queue,
-    :tool_handlers
+    :tool_handlers,
+    :current_slot_ref,
+    :pending_slot_ref
   ]
 
   @type thread_id :: String.t()
@@ -162,7 +164,9 @@ defmodule EchsCore.ThreadWorker do
           pending_interrupts: [GenServer.from()],
           queued_turns: [queued_turn()],
           steer_queue: [steer_turn()],
-          tool_handlers: %{optional(String.t()) => tool_handler()}
+          tool_handlers: %{optional(String.t()) => tool_handler()},
+          current_slot_ref: reference() | nil,
+          pending_slot_ref: reference() | nil
         }
 
   # Public API
@@ -400,7 +404,9 @@ defmodule EchsCore.ThreadWorker do
       pending_interrupts: [],
       queued_turns: queued_turns,
       steer_queue: steer_queue,
-      tool_handlers: %{}
+      tool_handlers: %{},
+      current_slot_ref: nil,
+      pending_slot_ref: nil
     }
 
     broadcast(state, :thread_created, %{thread_id: thread_id, config: config_summary(state)})
@@ -698,6 +704,29 @@ defmodule EchsCore.ThreadWorker do
   end
 
   @impl true
+  def handle_info({:turn_slot_granted, ref}, state) do
+    cond do
+      state.pending_slot_ref != ref ->
+        {:noreply, state}
+
+      state.status == :paused ->
+        EchsCore.TurnLimiter.release(ref)
+        {:noreply, %{state | pending_slot_ref: nil}}
+
+      state.current_message_id == nil ->
+        EchsCore.TurnLimiter.release(ref)
+        {:noreply, %{state | pending_slot_ref: nil}}
+
+      state.stream_pid != nil ->
+        {:noreply, %{state | pending_slot_ref: nil, current_slot_ref: ref}}
+
+      true ->
+        state = %{state | pending_slot_ref: nil, current_slot_ref: ref}
+        {:noreply, start_stream(state)}
+    end
+  end
+
+  @impl true
   def handle_info({:stream_complete, ref, result, collected_items}, state) do
     if ref == state.stream_ref do
       state = clear_stream(state)
@@ -814,7 +843,8 @@ defmodule EchsCore.ThreadWorker do
       safe_kill(child_id)
     end)
 
-    _ = cancel_stream(state, reason, reply?: false)
+    state = cancel_stream(state, reason, reply?: false)
+    state = state |> release_turn_slot() |> clear_pending_slot()
     broadcast(state, :thread_terminated, %{thread_id: state.thread_id, reason: reason})
     :ok
   end
@@ -824,27 +854,45 @@ defmodule EchsCore.ThreadWorker do
   defp start_stream(%{status: :paused} = state), do: state
 
   defp start_stream(state) do
-    if state.stream_pid do
-      state
-    else
-      stream_ref = make_ref()
-      parent = self()
-
-      {:ok, pid} =
-        Task.Supervisor.start_child(EchsCore.TaskSupervisor, fn ->
-          run_stream_request(state, stream_ref, parent)
-        end)
-
-      monitor_ref = Process.monitor(pid)
-
-      %{
+    cond do
+      state.stream_pid != nil ->
         state
-        | stream_ref: stream_ref,
-          stream_pid: pid,
-          stream_monitor: monitor_ref,
-          status: :running
-      }
+
+      state.pending_slot_ref != nil ->
+        state
+
+      state.current_slot_ref != nil ->
+        do_start_stream(state)
+
+      true ->
+        case EchsCore.TurnLimiter.acquire() do
+          {:ok, ref} ->
+            do_start_stream(%{state | current_slot_ref: ref})
+
+          {:wait, ref} ->
+            %{state | pending_slot_ref: ref}
+        end
     end
+  end
+
+  defp do_start_stream(state) do
+    stream_ref = make_ref()
+    parent = self()
+
+    {:ok, pid} =
+      Task.Supervisor.start_child(EchsCore.TaskSupervisor, fn ->
+        run_stream_request(state, stream_ref, parent)
+      end)
+
+    monitor_ref = Process.monitor(pid)
+
+    %{
+      state
+      | stream_ref: stream_ref,
+        stream_pid: pid,
+        stream_monitor: monitor_ref,
+        status: :running
+    }
   end
 
   defp run_stream_request(state, stream_ref, parent) do
@@ -984,6 +1032,20 @@ defmodule EchsCore.ThreadWorker do
     |> Map.put(:current_message_id, nil)
     |> Map.put(:current_turn_started_at_ms, nil)
     |> touch()
+  end
+
+  defp release_turn_slot(%{current_slot_ref: nil} = state), do: state
+
+  defp release_turn_slot(state) do
+    EchsCore.TurnLimiter.release(state.current_slot_ref)
+    %{state | current_slot_ref: nil}
+  end
+
+  defp clear_pending_slot(%{pending_slot_ref: nil} = state), do: state
+
+  defp clear_pending_slot(state) do
+    EchsCore.TurnLimiter.cancel(state.pending_slot_ref)
+    %{state | pending_slot_ref: nil}
   end
 
   defp request_stream_control(state, control) do
@@ -1707,6 +1769,7 @@ defmodule EchsCore.ThreadWorker do
     |> maybe_update(:instructions, config["instructions"], fn v ->
       build_instructions(v, new_cwd)
     end)
+    |> maybe_update_toolsets(config["toolsets"])
     |> maybe_update_tools(config["tools"])
   end
 
@@ -1714,6 +1777,17 @@ defmodule EchsCore.ThreadWorker do
   defp maybe_update(state, key, value), do: Map.put(state, key, value)
   defp maybe_update(state, _key, nil, _transform), do: state
   defp maybe_update(state, key, value, transform), do: Map.put(state, key, transform.(value))
+
+  defp maybe_update_toolsets(state, nil), do: state
+
+  defp maybe_update_toolsets(state, toolsets) do
+    toolsets = normalize_toolsets(toolsets)
+
+    case toolsets do
+      [] -> state
+      _ -> %{state | tools: tools_for_toolsets(toolsets)}
+    end
+  end
 
   defp maybe_update_tools(state, nil), do: state
 
@@ -1751,6 +1825,42 @@ defmodule EchsCore.ThreadWorker do
 
     %{state | tools: new_tools, tool_handlers: new_handlers}
   end
+
+  defp normalize_toolsets(toolsets) when is_list(toolsets) do
+    toolsets
+    |> Enum.map(&to_string/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp normalize_toolsets(toolsets) when is_binary(toolsets) do
+    toolsets
+    |> String.split(",", trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp normalize_toolsets(_), do: []
+
+  defp tools_for_toolsets(toolsets) do
+    toolsets
+    |> ensure_core_toolset()
+    |> Enum.flat_map(&toolset_specs/1)
+    |> uniq_tools()
+  end
+
+  defp ensure_core_toolset(toolsets) do
+    if Enum.any?(toolsets, &(&1 == "core")) do
+      toolsets
+    else
+      ["core" | toolsets]
+    end
+  end
+
+  defp toolset_specs("core"), do: core_tools()
+  defp toolset_specs("codex_forum"), do: Tools.CodexForum.specs()
+  defp toolset_specs("shell"), do: [Tools.Shell.spec()]
+  defp toolset_specs(_), do: []
 
   defp add_tool(tools, name) do
     # Add a default tool by name
@@ -1855,8 +1965,8 @@ defmodule EchsCore.ThreadWorker do
     String.replace(custom, "{{cwd}}", cwd)
   end
 
-  defp default_tools do
-    uniq_tools([
+  defp core_tools do
+    [
       # UnifiedExec-style session tools (port-backed stdio)
       Tools.Exec.exec_command_spec(),
       Tools.Exec.write_stdin_spec(),
@@ -1873,7 +1983,11 @@ defmodule EchsCore.ThreadWorker do
       Tools.SubAgent.blackboard_write_spec(),
       Tools.SubAgent.blackboard_read_spec(),
       Tools.SubAgent.kill_spec()
-    ] ++ Tools.CodexForum.specs())
+    ]
+  end
+
+  defp default_tools do
+    uniq_tools(core_tools() ++ Tools.CodexForum.specs())
   end
 
   defp config_summary(state) do
@@ -2113,6 +2227,8 @@ defmodule EchsCore.ThreadWorker do
 
     state =
       %{state | message_log: Map.put(state.message_log, message_id, normalize_message_meta(meta))}
+      |> release_turn_slot()
+      |> clear_pending_slot()
       |> touch()
 
     _ = persist_message(state, message_id)

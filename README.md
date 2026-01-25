@@ -52,6 +52,7 @@ Environment variables:
 - `ECHS_PORT` (default: `4000`)
 - `ECHS_API_TOKEN` (optional) - if set, requires `Authorization: Bearer <token>`
 - `ECHS_UPLOAD_DIR` (default: `/tmp/echs_uploads`) - where `/v1/uploads` stores files
+- `ECHS_MAX_CONCURRENT_TURNS` (default: `10`) - global cap on concurrent turns
 - `LOG_LEVEL` (default: `info`) - release runtime logger level (see `config/runtime.exs`)
 
 Run locally:
@@ -146,6 +147,7 @@ curl -s -X PATCH http://127.0.0.1:4000/v1/threads/<thread_id> \\
     "config": {
       "instructions": "You are a careful reviewer. Ask clarifying questions.",
       "reasoning": "high",
+      "toolsets": ["core", "codex_forum"],
       "tools": ["-apply_patch", "+shell", "+view_image"]
     }
   }'
@@ -153,7 +155,11 @@ curl -s -X PATCH http://127.0.0.1:4000/v1/threads/<thread_id> \\
 
 Supported config keys today:
 
-- `cwd`, `model`, `reasoning`, `instructions`, `tools`
+- `cwd`, `model`, `reasoning`, `instructions`, `toolsets`, `tools`
+
+`toolsets` accepts a list of named bundles (e.g. `core`, `codex_forum`). When
+present, ECHS rebuilds the tool list from those bundles before applying any
+`tools` add/remove modifiers.
 
 ### Send a message (async)
 
@@ -200,6 +206,14 @@ Events are emitted from `EchsCore.ThreadWorker` and sent as:
 ```text
 event: turn_delta
 data: {"thread_id":"...","message_id":"msg_...","content":"..."}
+```
+
+ECHS includes an `id:` field on SSE events and accepts `Last-Event-ID` to
+resume recent events (buffered per thread, newest 500). Example:
+
+```bash
+curl -N http://127.0.0.1:4000/v1/threads/<thread_id>/events \\
+  -H 'Last-Event-ID: 120'
 ```
 
 ### Fetching Previous Output / State

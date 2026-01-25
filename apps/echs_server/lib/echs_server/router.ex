@@ -56,6 +56,7 @@ defmodule EchsServer.Router do
   post "/v1/threads" do
     params = conn.body_params || %{}
     tools = Map.get(params, "tools")
+    toolsets = Map.get(params, "toolsets")
 
     opts =
       []
@@ -68,8 +69,13 @@ defmodule EchsServer.Router do
 
     case EchsCore.create_thread(opts) do
       {:ok, thread_id} ->
-        if tools != nil do
-          :ok = EchsCore.configure_thread(thread_id, %{"tools" => tools})
+        config =
+          %{}
+          |> maybe_put_config("tools", tools)
+          |> maybe_put_config("toolsets", toolsets)
+
+        if map_size(config) > 0 do
+          :ok = EchsCore.configure_thread(thread_id, config)
         end
 
         JSON.send_json(conn, 201, %{thread_id: thread_id})
@@ -369,11 +375,17 @@ defmodule EchsServer.Router do
   get "/v1/threads/:thread_id/events" do
     case safe_get_state(thread_id) do
       {:ok, _state} ->
+        last_event_id =
+          conn
+          |> get_req_header("last-event-id")
+          |> List.first()
+          |> parse_int(nil)
+
         conn
         |> put_resp_header("cache-control", "no-cache")
         |> put_resp_header("content-type", "text/event-stream")
         |> send_chunked(200)
-        |> stream_thread_events(thread_id)
+        |> stream_thread_events(thread_id, last_event_id)
 
       :not_found ->
         JSON.send_error(conn, 404, "thread not found")
@@ -386,8 +398,8 @@ defmodule EchsServer.Router do
 
   # --- Streaming
 
-  defp stream_thread_events(conn, thread_id) do
-    :ok = EchsCore.subscribe(thread_id)
+  defp stream_thread_events(conn, thread_id, last_event_id) do
+    :ok = EchsServer.ThreadEventBuffer.subscribe(thread_id, last_event_id)
 
     case chunk(conn, sse_event("ready", %{thread_id: thread_id})) do
       {:ok, conn} -> stream_loop(conn)
@@ -397,8 +409,8 @@ defmodule EchsServer.Router do
 
   defp stream_loop(conn) do
     receive do
-      {event_type, data} ->
-        payload = sse_event(to_string(event_type), data)
+      {:event, id, event_type, data} ->
+        payload = sse_event(to_string(event_type), data, id)
 
         case chunk(conn, payload) do
           {:ok, conn} -> stream_loop(conn)
@@ -414,9 +426,16 @@ defmodule EchsServer.Router do
     end
   end
 
-  defp sse_event(event, data) do
+  defp sse_event(event, data, id \\ nil) do
     json = Jason.encode!(data)
-    "event: #{event}\n" <> "data: #{json}\n\n"
+
+    id_line =
+      case id do
+        nil -> ""
+        _ -> "id: #{id}\n"
+      end
+
+    id_line <> "event: #{event}\n" <> "data: #{json}\n\n"
   end
 
   # --- Normalization / safety
@@ -426,6 +445,13 @@ defmodule EchsServer.Router do
 
   defp maybe_put_kw(opts, key, value) do
     Keyword.put(opts, key, value)
+  end
+
+  defp maybe_put_config(config, _key, nil), do: config
+  defp maybe_put_config(config, _key, ""), do: config
+
+  defp maybe_put_config(config, key, value) do
+    Map.put(config, key, value)
   end
 
   defp parse_coordination(nil), do: nil
