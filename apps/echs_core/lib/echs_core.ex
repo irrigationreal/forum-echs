@@ -18,6 +18,24 @@ defmodule EchsCore do
   def enqueue_message(thread_id, content, opts \\ []),
     do: ThreadWorker.enqueue_message(thread_id, content, opts)
 
+  @spec list_messages(String.t(), keyword()) :: [map()]
+  def list_messages(thread_id, opts \\ []),
+    do: ThreadWorker.list_messages(thread_id, opts)
+
+  @spec get_message(String.t(), String.t()) :: {:ok, map()} | {:error, :not_found}
+  def get_message(thread_id, message_id),
+    do: ThreadWorker.get_message(thread_id, message_id)
+
+  @spec get_message_items(String.t(), String.t(), keyword()) ::
+          {:ok, %{message: map(), items: [map()]}} | {:error, :not_found}
+  def get_message_items(thread_id, message_id, opts \\ []),
+    do: ThreadWorker.get_message_items(thread_id, message_id, opts)
+
+  @spec get_history(String.t(), keyword()) ::
+          {:ok, %{total: non_neg_integer(), offset: non_neg_integer(), limit: non_neg_integer(), items: [map()]}}
+  def get_history(thread_id, opts \\ []),
+    do: ThreadWorker.get_history(thread_id, opts)
+
   @spec queue_message(String.t(), String.t() | [map()], keyword()) ::
           {:ok, [map()]} | {:error, term()}
   def queue_message(thread_id, content, opts \\ []),

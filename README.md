@@ -202,6 +202,36 @@ event: turn_delta
 data: {"thread_id":"...","message_id":"msg_...","content":"..."}
 ```
 
+### Fetching Previous Output / State
+
+If a client disconnects from SSE, you can still query the server for:
+
+- per-message metadata/status (queued/running/completed/error)
+- per-message history slices (the items produced by that message)
+- the thread's full history (paged)
+
+List messages:
+
+```bash
+curl -s http://127.0.0.1:4000/v1/threads/<thread_id>/messages | jq .
+```
+
+Get message status, and (optionally) its history items:
+
+```bash
+curl -s http://127.0.0.1:4000/v1/threads/<thread_id>/messages/<message_id> | jq .
+curl -s 'http://127.0.0.1:4000/v1/threads/<thread_id>/messages/<message_id>?include_items=1' | jq .
+```
+
+Fetch paged history:
+
+```bash
+curl -s 'http://127.0.0.1:4000/v1/threads/<thread_id>/history?offset=0&limit=200' | jq .
+```
+
+By default, history responses redact base64 `data:` URLs in `input_image` items.
+Use `redact=0` if you really want raw payloads.
+
 ### Uploading Images (HTTP)
 
 ECHS supports `input_image` content items. The easiest way to construct those

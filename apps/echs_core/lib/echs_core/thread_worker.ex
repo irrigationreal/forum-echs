@@ -84,6 +84,7 @@ defmodule EchsCore.ThreadWorker do
     :current_turn_started_at_ms,
     :message_ids,
     :message_id_set,
+    :message_log,
     :children,
     :coordination_mode,
     :blackboard,
@@ -112,6 +113,20 @@ defmodule EchsCore.ThreadWorker do
           message_id: String.t(),
           enqueued_at_ms: non_neg_integer()
         }
+
+  @type message_status :: :queued | :running | :completed | :interrupted | :paused | :error
+
+  @type message_meta :: %{
+          message_id: String.t(),
+          status: message_status(),
+          enqueued_at_ms: non_neg_integer() | nil,
+          started_at_ms: non_neg_integer() | nil,
+          completed_at_ms: non_neg_integer() | nil,
+          history_start: non_neg_integer() | nil,
+          history_end: non_neg_integer() | nil,
+          error: term() | nil
+        }
+
   @type steer_turn :: %{
           from: GenServer.from() | nil,
           content: String.t() | [map()],
@@ -136,6 +151,7 @@ defmodule EchsCore.ThreadWorker do
           current_turn_started_at_ms: non_neg_integer() | nil,
           message_ids: [String.t()],
           message_id_set: MapSet.t(),
+          message_log: %{optional(String.t()) => message_meta()},
           children: %{optional(thread_id()) => child_info()},
           coordination_mode: :hierarchical | :blackboard | :peer,
           blackboard: pid(),
@@ -205,6 +221,50 @@ defmodule EchsCore.ThreadWorker do
           {:ok, String.t()} | {:error, term()}
   def enqueue_message(thread_id, content, opts \\ []) do
     GenServer.call(via_tuple(thread_id), {:enqueue_message, content, opts})
+  end
+
+  @doc """
+  List known message ids for this thread, newest-first.
+
+  Options:
+    - `:limit` (default: 50)
+  """
+  @spec list_messages(thread_id(), keyword()) :: [message_meta()]
+  def list_messages(thread_id, opts \\ []) do
+    GenServer.call(via_tuple(thread_id), {:list_messages, opts})
+  end
+
+  @doc """
+  Fetch a single message metadata entry.
+  """
+  @spec get_message(thread_id(), String.t()) :: {:ok, message_meta()} | {:error, :not_found}
+  def get_message(thread_id, message_id) do
+    GenServer.call(via_tuple(thread_id), {:get_message, message_id})
+  end
+
+  @doc """
+  Return a slice of thread history items.
+
+  Options:
+    - `:offset` (default: 0)
+    - `:limit` (default: 200)
+  """
+  @spec get_history(thread_id(), keyword()) ::
+          {:ok, %{total: non_neg_integer(), offset: non_neg_integer(), limit: non_neg_integer(), items: [map()]}}
+  def get_history(thread_id, opts \\ []) do
+    GenServer.call(via_tuple(thread_id), {:get_history, opts})
+  end
+
+  @doc """
+  Return the history items associated with a single message_id.
+
+  If the message is still running, `history_end` is treated as the current
+  history length.
+  """
+  @spec get_message_items(thread_id(), String.t(), keyword()) ::
+          {:ok, %{message: message_meta(), items: [map()]}} | {:error, :not_found}
+  def get_message_items(thread_id, message_id, opts \\ []) do
+    GenServer.call(via_tuple(thread_id), {:get_message_items, message_id, opts})
   end
 
   @doc """
@@ -313,6 +373,7 @@ defmodule EchsCore.ThreadWorker do
       current_turn_started_at_ms: nil,
       message_ids: [],
       message_id_set: MapSet.new(),
+      message_log: %{},
       children: %{},
       coordination_mode: Keyword.get(opts, :coordination_mode, :hierarchical),
       blackboard: blackboard,
@@ -348,7 +409,10 @@ defmodule EchsCore.ThreadWorker do
     if MapSet.member?(state.message_id_set, message_id) do
       {:reply, {:ok, message_id}, touch(state)}
     else
-      state = remember_message_id(state, message_id)
+      state =
+        state
+        |> remember_message_id(message_id)
+        |> message_log_enqueue(message_id)
 
       state =
         case mode do
@@ -389,6 +453,11 @@ defmodule EchsCore.ThreadWorker do
   def handle_call({:send_message, content, opts}, from, %{status: :running} = state) do
     mode = send_mode(opts)
     message_id = message_id_for_turn(state, opts)
+
+    state =
+      state
+      |> remember_message_id(message_id)
+      |> message_log_enqueue(message_id)
 
     state =
       case mode do
@@ -471,6 +540,66 @@ defmodule EchsCore.ThreadWorker do
   end
 
   @impl true
+  def handle_call({:list_messages, opts}, _from, state) do
+    limit = Keyword.get(opts, :limit, 50) |> clamp_int(1, 500)
+
+    messages =
+      state.message_ids
+      |> Enum.reverse()
+      |> Enum.take(limit)
+      |> Enum.map(fn id -> Map.get(state.message_log, id) end)
+      |> Enum.reject(&is_nil/1)
+
+    {:reply, messages, state}
+  end
+
+  @impl true
+  def handle_call({:get_message, message_id}, _from, state) do
+    message_id = to_string(message_id)
+
+    case Map.fetch(state.message_log, message_id) do
+      {:ok, meta} -> {:reply, {:ok, meta}, state}
+      :error -> {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:get_history, opts}, _from, state) do
+    offset = Keyword.get(opts, :offset, 0) |> clamp_int(0, 1_000_000_000)
+    limit = Keyword.get(opts, :limit, 200) |> clamp_int(1, 2_000)
+
+    total = length(state.history_items)
+
+    items =
+      state.history_items
+      |> Enum.drop(offset)
+      |> Enum.take(limit)
+
+    {:reply, {:ok, %{total: total, offset: offset, limit: limit, items: items}}, state}
+  end
+
+  @impl true
+  def handle_call({:get_message_items, message_id, _opts}, _from, state) do
+    message_id = to_string(message_id)
+
+    case Map.fetch(state.message_log, message_id) do
+      {:ok, meta} ->
+        start_i = meta.history_start || 0
+        end_i = meta.history_end || length(state.history_items)
+
+        items =
+          state.history_items
+          |> Enum.drop(start_i)
+          |> Enum.take(max(end_i - start_i, 0))
+
+        {:reply, {:ok, %{message: meta, items: items}}, state}
+
+      :error ->
+        {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  @impl true
   def handle_call(:pause, _from, state) do
     state = cancel_stream(state, :paused, reply?: true)
     {:reply, :ok, %{state | status: :paused}}
@@ -534,6 +663,7 @@ defmodule EchsCore.ThreadWorker do
             state = %{state | history_items: state.history_items ++ tool_results}
             {:noreply, start_stream(state)}
           else
+            state = complete_current_message(state, :completed, nil)
             broadcast(state, :turn_completed, %{thread_id: state.thread_id})
             state = finish_turn(state, {:ok, state.history_items})
             state = reply_interrupt_waiters(state, {:error, :turn_completed})
@@ -541,17 +671,20 @@ defmodule EchsCore.ThreadWorker do
           end
 
         {:error, :interrupt} ->
+          state = complete_current_message(state, :interrupted, :interrupted)
           broadcast(state, :turn_interrupted, %{thread_id: state.thread_id})
           state = finish_turn(state, {:error, :interrupted})
           state = reply_interrupt_waiters(state, :ok)
           {:noreply, start_next_turn(%{state | status: :idle})}
 
         {:error, :steer} ->
+          state = complete_current_message(state, :interrupted, :steered)
           broadcast(state, :turn_interrupted, %{thread_id: state.thread_id})
           state = reply_interrupt_waiters(state, {:error, :steered})
           {:noreply, start_next_turn(state)}
 
         {:error, :pause} ->
+          state = complete_current_message(state, :paused, :paused)
           broadcast(state, :turn_interrupted, %{thread_id: state.thread_id})
           state = finish_turn(state, {:error, :paused})
           state = reply_interrupt_waiters(state, {:error, :paused})
@@ -559,6 +692,7 @@ defmodule EchsCore.ThreadWorker do
 
         {:error, error} ->
           Logger.error("Codex API error: #{inspect(error)}")
+          state = complete_current_message(state, :error, error)
           broadcast(state, :turn_error, %{thread_id: state.thread_id, error: error})
           state = finish_turn(state, {:error, error})
           state = reply_interrupt_waiters(state, {:error, error})
@@ -749,6 +883,8 @@ defmodule EchsCore.ThreadWorker do
 
   defp cancel_stream(state, reason, opts) do
     reply? = Keyword.get(opts, :reply?, true)
+
+    state = complete_current_message(state, cancel_reason_status(reason), reason)
 
     if state.stream_pid do
       Process.exit(state.stream_pid, :shutdown)
@@ -1712,12 +1848,70 @@ defmodule EchsCore.ThreadWorker do
   @max_message_ids 1_000
 
   defp begin_turn(state, message_id) when is_binary(message_id) and message_id != "" do
+    now = now_ms()
+    history_start = length(state.history_items)
+
     state
     |> remember_message_id(message_id)
+    |> message_log_start(message_id, now, history_start)
     |> Map.put(:current_message_id, message_id)
-    |> Map.put(:current_turn_started_at_ms, now_ms())
+    |> Map.put(:current_turn_started_at_ms, now)
     |> touch()
   end
+
+  defp message_log_enqueue(state, message_id) when is_binary(message_id) and message_id != "" do
+    now = now_ms()
+
+    meta =
+      state.message_log
+      |> Map.get(message_id, %{message_id: message_id})
+      |> Map.put_new(:enqueued_at_ms, now)
+      |> Map.put(:status, :queued)
+
+    %{state | message_log: Map.put(state.message_log, message_id, normalize_message_meta(meta))}
+    |> touch()
+  end
+
+  defp message_log_enqueue(state, _message_id), do: state
+
+  defp message_log_start(state, message_id, started_at_ms, history_start)
+       when is_binary(message_id) and message_id != "" do
+    meta =
+      state.message_log
+      |> Map.get(message_id, %{message_id: message_id})
+      |> Map.put_new(:enqueued_at_ms, started_at_ms)
+      |> Map.put(:status, :running)
+      |> Map.put(:started_at_ms, started_at_ms)
+      |> Map.put(:completed_at_ms, nil)
+      |> Map.put(:history_start, history_start)
+      |> Map.put(:history_end, nil)
+      |> Map.put(:error, nil)
+
+    %{state | message_log: Map.put(state.message_log, message_id, normalize_message_meta(meta))}
+  end
+
+  defp complete_current_message(%{current_message_id: nil} = state, _status, _error), do: state
+
+  defp complete_current_message(state, status, error) do
+    message_id = state.current_message_id
+    now = now_ms()
+
+    meta =
+      state.message_log
+      |> Map.get(message_id, %{message_id: message_id})
+      |> Map.put_new(:enqueued_at_ms, now)
+      |> Map.put_new(:started_at_ms, state.current_turn_started_at_ms || now)
+      |> Map.put(:status, status)
+      |> Map.put(:completed_at_ms, now)
+      |> Map.put(:history_end, length(state.history_items))
+      |> Map.put(:error, error)
+
+    %{state | message_log: Map.put(state.message_log, message_id, normalize_message_meta(meta))}
+    |> touch()
+  end
+
+  defp cancel_reason_status(:paused), do: :paused
+  defp cancel_reason_status(_), do: :interrupted
 
   defp remember_message_id(state, message_id) when is_binary(message_id) and message_id != "" do
     if MapSet.member?(state.message_id_set, message_id) do
@@ -1726,8 +1920,14 @@ defmodule EchsCore.ThreadWorker do
       message_ids = state.message_ids ++ [message_id]
       message_id_set = MapSet.put(state.message_id_set, message_id)
 
-      {message_ids, message_id_set} = trim_message_id_cache(message_ids, message_id_set)
-      %{state | message_ids: message_ids, message_id_set: message_id_set}
+      {message_ids, message_id_set, dropped} = trim_message_id_cache(message_ids, message_id_set)
+
+      message_log =
+        Enum.reduce(dropped, state.message_log, fn id, acc ->
+          Map.delete(acc, id)
+        end)
+
+      %{state | message_ids: message_ids, message_id_set: message_id_set, message_log: message_log}
     end
   end
 
@@ -1742,14 +1942,37 @@ defmodule EchsCore.ThreadWorker do
       message_id_set =
         Enum.reduce(dropped, message_id_set, fn id, acc -> MapSet.delete(acc, id) end)
 
-      {kept, message_id_set}
+      {kept, message_id_set, dropped}
     else
-      {message_ids, message_id_set}
+      {message_ids, message_id_set, []}
     end
   end
 
   defp touch(state) do
     %{state | last_activity_at_ms: now_ms()}
+  end
+
+  defp clamp_int(value, min, max) when is_integer(value) do
+    value |> min(max) |> max(min)
+  end
+
+  defp clamp_int(value, min, max) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, _} -> clamp_int(int, min, max)
+      :error -> min
+    end
+  end
+
+  defp clamp_int(_value, min, _max), do: min
+
+  defp normalize_message_meta(meta) when is_map(meta) do
+    meta
+    |> Map.put_new(:enqueued_at_ms, nil)
+    |> Map.put_new(:started_at_ms, nil)
+    |> Map.put_new(:completed_at_ms, nil)
+    |> Map.put_new(:history_start, nil)
+    |> Map.put_new(:history_end, nil)
+    |> Map.put_new(:error, nil)
   end
 
   defp now_ms do

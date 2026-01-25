@@ -107,6 +107,74 @@ defmodule EchsServer.Router do
     end
   end
 
+  get "/v1/threads/:thread_id/history" do
+    conn = fetch_query_params(conn)
+    offset = parse_int(conn.query_params["offset"], 0)
+    limit = parse_int(conn.query_params["limit"], 200)
+    redact? = parse_bool(conn.query_params["redact"] || "1")
+
+    case safe_get_history(thread_id, offset: offset, limit: limit) do
+      {:ok, %{items: items} = resp} ->
+        items = maybe_redact_history(items, redact?)
+        JSON.send_json(conn, 200, Map.put(resp, :items, items) |> Map.put(:thread_id, thread_id))
+
+      {:error, :not_found} ->
+        JSON.send_error(conn, 404, "thread not found")
+    end
+  end
+
+  get "/v1/threads/:thread_id/messages" do
+    conn = fetch_query_params(conn)
+    limit = parse_int(conn.query_params["limit"], 50)
+
+    case safe_list_messages(thread_id, limit: limit) do
+      {:ok, messages} ->
+        JSON.send_json(conn, 200, %{thread_id: thread_id, messages: sanitize_message_list(messages)})
+
+      {:error, :not_found} ->
+        JSON.send_error(conn, 404, "thread not found")
+    end
+  end
+
+  get "/v1/threads/:thread_id/messages/:message_id" do
+    conn = fetch_query_params(conn)
+    include_items? = parse_bool(conn.query_params["include_items"] || "0")
+    redact? = parse_bool(conn.query_params["redact"] || "1")
+
+    with :ok <- validate_id_optional("message_id", message_id),
+         {:ok, message} <- safe_get_message(thread_id, message_id) do
+      if include_items? do
+        case safe_get_message_items(thread_id, message_id) do
+          {:ok, %{items: items}} ->
+            items = maybe_redact_history(items, redact?)
+
+            JSON.send_json(conn, 200, %{
+              thread_id: thread_id,
+              message: sanitize_message(message),
+              items: items
+            })
+
+          {:error, :thread_not_found} ->
+            JSON.send_error(conn, 404, "thread not found")
+
+          {:error, :not_found} ->
+            JSON.send_error(conn, 404, "message not found")
+        end
+      else
+        JSON.send_json(conn, 200, %{thread_id: thread_id, message: sanitize_message(message)})
+      end
+    else
+      {:error, :thread_not_found} ->
+        JSON.send_error(conn, 404, "thread not found")
+
+      {:error, :not_found} ->
+        JSON.send_error(conn, 404, "message not found")
+
+      {:error, {:invalid_id, field, detail}} ->
+        JSON.send_error(conn, 400, "invalid #{field}", %{details: detail})
+    end
+  end
+
   patch "/v1/threads/:thread_id" do
     params = conn.body_params || %{}
     config = Map.get(params, "config", params)
@@ -277,6 +345,19 @@ defmodule EchsServer.Router do
   defp parse_bool(value) when value in [true, "true", "1", 1, "yes", "on"], do: true
   defp parse_bool(_), do: false
 
+  defp parse_int(nil, default), do: default
+  defp parse_int("", default), do: default
+  defp parse_int(value, _default) when is_integer(value), do: value
+
+  defp parse_int(value, default) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, _} -> int
+      :error -> default
+    end
+  end
+
+  defp parse_int(_other, default), do: default
+
   defp validate_id_optional(_field, nil), do: :ok
   defp validate_id_optional(_field, ""), do: :ok
 
@@ -361,6 +442,38 @@ defmodule EchsServer.Router do
     end
   end
 
+  defp safe_get_history(thread_id, opts) do
+    try do
+      EchsCore.get_history(thread_id, opts)
+    catch
+      :exit, _ -> {:error, :not_found}
+    end
+  end
+
+  defp safe_list_messages(thread_id, opts) do
+    try do
+      {:ok, EchsCore.list_messages(thread_id, opts)}
+    catch
+      :exit, _ -> {:error, :not_found}
+    end
+  end
+
+  defp safe_get_message(thread_id, message_id) do
+    try do
+      EchsCore.get_message(thread_id, message_id)
+    catch
+      :exit, _ -> {:error, :thread_not_found}
+    end
+  end
+
+  defp safe_get_message_items(thread_id, message_id) do
+    try do
+      EchsCore.get_message_items(thread_id, message_id)
+    catch
+      :exit, _ -> {:error, :thread_not_found}
+    end
+  end
+
   defp safe_enqueue_message(thread_id, content, opts) do
     try do
       EchsCore.enqueue_message(thread_id, content, opts)
@@ -398,6 +511,65 @@ defmodule EchsServer.Router do
       :ok = EchsCore.kill_thread(thread_id)
     catch
       :exit, _ -> {:error, :not_found}
+    end
+  end
+
+  defp sanitize_message_list(messages) when is_list(messages) do
+    Enum.map(messages, &sanitize_message/1)
+  end
+
+  defp sanitize_message(meta) when is_map(meta) do
+    %{
+      message_id: meta.message_id,
+      status: to_string(meta.status),
+      enqueued_at: iso8601(meta.enqueued_at_ms),
+      started_at: iso8601(meta.started_at_ms),
+      completed_at: iso8601(meta.completed_at_ms),
+      history_start: meta.history_start,
+      history_end: meta.history_end,
+      error: format_message_error(meta.error)
+    }
+  end
+
+  defp format_message_error(nil), do: nil
+  defp format_message_error(err) when is_binary(err), do: err
+  defp format_message_error(err), do: inspect(err)
+
+  defp maybe_redact_history(items, false), do: items
+
+  defp maybe_redact_history(items, true) when is_list(items) do
+    Enum.map(items, &redact_history_item/1)
+  end
+
+  defp redact_history_item(item) when is_map(item) do
+    case item["type"] do
+      "message" ->
+        Map.update(item, "content", [], fn content ->
+          Enum.map(content, &redact_content_item/1)
+        end)
+
+      _ ->
+        item
+    end
+  end
+
+  defp redact_history_item(other), do: other
+
+  defp redact_content_item(%{"type" => "input_image", "image_url" => url} = item)
+       when is_binary(url) and url != "" do
+    if String.starts_with?(url, "data:") do
+      Map.put(item, "image_url", redact_data_url(url))
+    else
+      item
+    end
+  end
+
+  defp redact_content_item(item), do: item
+
+  defp redact_data_url(url) do
+    case String.split(url, ",", parts: 2) do
+      [prefix, _] -> prefix <> ",[redacted]"
+      _ -> "data:[redacted]"
     end
   end
 

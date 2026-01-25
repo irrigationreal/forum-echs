@@ -128,6 +128,96 @@ defmodule EchsServer.RouterTest do
     assert state["thread_id"] == thread_id
   end
 
+  test "history and message endpoints work for an empty thread" do
+    body = Jason.encode!(%{"cwd" => File.cwd!()})
+
+    conn =
+      conn(:post, "/v1/threads", body)
+      |> put_req_header("content-type", "application/json")
+
+    conn = Router.call(conn, [])
+    thread_id = Jason.decode!(conn.resp_body)["thread_id"]
+
+    conn = conn(:get, "/v1/threads/#{thread_id}/history")
+    conn = Router.call(conn, [])
+    assert conn.status == 200
+    resp = Jason.decode!(conn.resp_body)
+    assert resp["thread_id"] == thread_id
+    assert resp["total"] == 0
+    assert resp["items"] == []
+
+    conn = conn(:get, "/v1/threads/#{thread_id}/messages")
+    conn = Router.call(conn, [])
+    assert conn.status == 200
+    assert Jason.decode!(conn.resp_body)["messages"] == []
+  end
+
+  test "message metadata + items can be fetched" do
+    body = Jason.encode!(%{"cwd" => File.cwd!()})
+
+    conn =
+      conn(:post, "/v1/threads", body)
+      |> put_req_header("content-type", "application/json")
+
+    conn = Router.call(conn, [])
+    thread_id = Jason.decode!(conn.resp_body)["thread_id"]
+
+    # Inject some message history + message_log without hitting the external Codex API.
+    [{pid, _}] = Registry.lookup(EchsCore.Registry, thread_id)
+
+    message_id = "msg_test_1"
+
+    :sys.replace_state(pid, fn state ->
+      history_items = [
+        %{"type" => "message", "role" => "user", "content" => [%{"type" => "input_text", "text" => "a"}]},
+        %{
+          "type" => "message",
+          "role" => "user",
+          "content" => [%{"type" => "input_image", "image_url" => "data:image/png;base64,AAAA"}]
+        },
+        %{"type" => "message", "role" => "assistant", "content" => [%{"type" => "output_text", "text" => "b"}]}
+      ]
+
+      meta = %{
+        message_id: message_id,
+        status: :completed,
+        enqueued_at_ms: state.created_at_ms,
+        started_at_ms: state.created_at_ms,
+        completed_at_ms: state.created_at_ms,
+        history_start: 0,
+        history_end: length(history_items),
+        error: nil
+      }
+
+      %{
+        state
+        | history_items: history_items,
+          message_ids: [message_id],
+          message_id_set: MapSet.new([message_id]),
+          message_log: %{message_id => meta}
+      }
+    end)
+
+    conn = conn(:get, "/v1/threads/#{thread_id}/messages")
+    conn = Router.call(conn, [])
+    assert conn.status == 200
+    resp = Jason.decode!(conn.resp_body)
+    assert length(resp["messages"]) == 1
+    assert hd(resp["messages"])["message_id"] == message_id
+
+    conn = conn(:get, "/v1/threads/#{thread_id}/messages/#{message_id}?include_items=1")
+    conn = Router.call(conn, [])
+    assert conn.status == 200
+    resp = Jason.decode!(conn.resp_body)
+    assert resp["message"]["message_id"] == message_id
+    assert length(resp["items"]) == 3
+
+    # Verify base64 data urls are redacted by default.
+    img = Enum.at(resp["items"], 1)
+    assert img["type"] == "message"
+    assert String.contains?(img["content"] |> hd() |> Map.get("image_url"), "[redacted]")
+  end
+
   test "patch updates config" do
     body = Jason.encode!(%{"cwd" => File.cwd!()})
 

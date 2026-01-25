@@ -191,6 +191,28 @@ defmodule EchsProtocol.V1.OpenAPI do
             schema: %{"$ref" => "#/components/schemas/ThreadId"}
           }
         ],
+        get: %{
+          summary: "List message_ids for a thread (newest first)",
+          parameters: [
+            %{
+              name: "limit",
+              in: "query",
+              required: false,
+              schema: %{type: "integer", default: 50, minimum: 1, maximum: 500}
+            }
+          ],
+          responses: %{
+            "200" => %{
+              description: "Message list",
+              content: %{
+                "application/json" => %{
+                  schema: %{"$ref" => "#/components/schemas/MessageListResponse"}
+                }
+              }
+            },
+            "404" => json_error_response("Thread not found")
+          }
+        },
         post: %{
           summary: "Enqueue a message (async) and return message_id",
           requestBody: %{
@@ -212,6 +234,92 @@ defmodule EchsProtocol.V1.OpenAPI do
             },
             "404" => json_error_response("Thread not found"),
             "409" => json_error_response("Thread is paused")
+          }
+        }
+      },
+      "/v1/threads/{thread_id}/messages/{message_id}" => %{
+        parameters: [
+          %{
+            name: "thread_id",
+            in: "path",
+            required: true,
+            schema: %{"$ref" => "#/components/schemas/ThreadId"}
+          },
+          %{
+            name: "message_id",
+            in: "path",
+            required: true,
+            schema: %{"$ref" => "#/components/schemas/MessageId"}
+          }
+        ],
+        get: %{
+          summary: "Get message metadata (and optionally items)",
+          parameters: [
+            %{
+              name: "include_items",
+              in: "query",
+              required: false,
+              schema: %{type: "boolean", default: false},
+              description: "If true, include the history items slice associated with this message."
+            },
+            %{
+              name: "redact",
+              in: "query",
+              required: false,
+              schema: %{type: "boolean", default: true},
+              description: "If true, redact base64 data: URLs in returned history items."
+            }
+          ],
+          responses: %{
+            "200" => %{
+              description: "Message metadata",
+              content: %{
+                "application/json" => %{
+                  schema: %{"$ref" => "#/components/schemas/MessageGetResponse"}
+                }
+              }
+            },
+            "404" => json_error_response("Message or thread not found")
+          }
+        }
+      },
+      "/v1/threads/{thread_id}/history" => %{
+        parameters: [
+          %{
+            name: "thread_id",
+            in: "path",
+            required: true,
+            schema: %{"$ref" => "#/components/schemas/ThreadId"}
+          }
+        ],
+        get: %{
+          summary: "Get thread history items (paged)",
+          parameters: [
+            %{name: "offset", in: "query", required: false, schema: %{type: "integer", default: 0, minimum: 0}},
+            %{
+              name: "limit",
+              in: "query",
+              required: false,
+              schema: %{type: "integer", default: 200, minimum: 1, maximum: 2000}
+            },
+            %{
+              name: "redact",
+              in: "query",
+              required: false,
+              schema: %{type: "boolean", default: true},
+              description: "If true, redact base64 data: URLs in returned history items."
+            }
+          ],
+          responses: %{
+            "200" => %{
+              description: "History slice",
+              content: %{
+                "application/json" => %{
+                  schema: %{"$ref" => "#/components/schemas/HistoryResponse"}
+                }
+              }
+            },
+            "404" => json_error_response("Thread not found")
           }
         }
       },
@@ -426,6 +534,52 @@ defmodule EchsProtocol.V1.OpenAPI do
           content: %{"$ref" => "#/components/schemas/MessageContentItem"}
         },
         required: ["upload_id", "kind", "bytes", "content_type", "content"],
+        additionalProperties: false
+      },
+      MessageMeta: %{
+        type: "object",
+        properties: %{
+          message_id: %{"$ref" => "#/components/schemas/MessageId"},
+          status: %{type: "string", enum: ["queued", "running", "completed", "interrupted", "paused", "error"]},
+          enqueued_at: %{"$ref" => "#/components/schemas/ISO8601"},
+          started_at: %{"$ref" => "#/components/schemas/ISO8601"},
+          completed_at: %{"$ref" => "#/components/schemas/ISO8601"},
+          history_start: %{type: ["integer", "null"]},
+          history_end: %{type: ["integer", "null"]},
+          error: %{type: ["string", "null"]}
+        },
+        required: ["message_id", "status"],
+        additionalProperties: false
+      },
+      MessageListResponse: %{
+        type: "object",
+        properties: %{
+          thread_id: %{"$ref" => "#/components/schemas/ThreadId"},
+          messages: %{type: "array", items: %{"$ref" => "#/components/schemas/MessageMeta"}}
+        },
+        required: ["thread_id", "messages"],
+        additionalProperties: false
+      },
+      MessageGetResponse: %{
+        type: "object",
+        properties: %{
+          thread_id: %{"$ref" => "#/components/schemas/ThreadId"},
+          message: %{"$ref" => "#/components/schemas/MessageMeta"},
+          items: %{type: "array", items: %{"$ref" => "#/components/schemas/JSONValue"}}
+        },
+        required: ["thread_id", "message"],
+        additionalProperties: true
+      },
+      HistoryResponse: %{
+        type: "object",
+        properties: %{
+          thread_id: %{"$ref" => "#/components/schemas/ThreadId"},
+          total: %{type: "integer"},
+          offset: %{type: "integer"},
+          limit: %{type: "integer"},
+          items: %{type: "array", items: %{"$ref" => "#/components/schemas/JSONValue"}}
+        },
+        required: ["thread_id", "total", "offset", "limit", "items"],
         additionalProperties: false
       },
       ErrorResponse: %{
