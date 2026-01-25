@@ -584,13 +584,17 @@ defmodule EchsCore.ThreadWorker do
 
     case Map.fetch(state.message_log, message_id) do
       {:ok, meta} ->
-        start_i = meta.history_start || 0
-        end_i = meta.history_end || length(state.history_items)
-
         items =
-          state.history_items
-          |> Enum.drop(start_i)
-          |> Enum.take(max(end_i - start_i, 0))
+          if is_integer(meta.history_start) do
+            start_i = meta.history_start
+            end_i = meta.history_end || length(state.history_items)
+
+            state.history_items
+            |> Enum.drop(start_i)
+            |> Enum.take(max(end_i - start_i, 0))
+          else
+            []
+          end
 
         {:reply, {:ok, %{message: meta, items: items}}, state}
 
