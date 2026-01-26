@@ -7,7 +7,7 @@ defmodule EchsStore do
   uses it to survive daemon restarts.
   """
 
-  alias EchsStore.{History, Messages, Repo, Threads}
+  alias EchsStore.{Conversations, History, Messages, Repo, Threads}
 
   @spec enabled?() :: boolean()
   def enabled? do
@@ -22,6 +22,16 @@ defmodule EchsStore do
   defdelegate upsert_thread(attrs), to: Threads
   defdelegate get_thread(thread_id), to: Threads
   defdelegate list_threads(opts \\ []), to: Threads
+  defdelegate set_thread_conversation(thread_id, conversation_id), to: Threads
+  defdelegate list_threads_for_conversation(conversation_id), to: Threads
+
+  defdelegate upsert_conversation(attrs), to: Conversations
+  defdelegate get_conversation(conversation_id), to: Conversations
+  defdelegate list_conversations(opts \\ []), to: Conversations
+
+  defdelegate update_conversation_active_thread(conversation_id, thread_id),
+    to: Conversations,
+    as: :update_active_thread
 
   defdelegate upsert_message(thread_id, message_id, attrs), to: Messages
   defdelegate get_message(thread_id, message_id), to: Messages

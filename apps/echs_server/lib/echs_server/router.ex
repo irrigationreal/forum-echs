@@ -5,8 +5,8 @@ defmodule EchsServer.Router do
 
   import Plug.Conn
 
-  alias EchsServer.JSON
-  alias EchsStore.{Message, Thread}
+  alias EchsServer.{Conversations, JSON}
+  alias EchsStore.{Conversation, Message, Thread}
 
   plug(EchsServer.AuthPlug)
 
@@ -52,6 +52,174 @@ defmodule EchsServer.Router do
   end
 
   # --- Threads
+
+  # --- Conversations
+
+  post "/v1/conversations" do
+    params = conn.body_params || %{}
+
+    case Conversations.create(params) do
+      {:ok, conversation} ->
+        JSON.send_json(conn, 201, %{conversation: sanitize_conversation_record(conversation)})
+
+      {:error, reason} ->
+        JSON.send_error(conn, 400, "failed to create conversation", %{reason: inspect(reason)})
+    end
+  end
+
+  get "/v1/conversations" do
+    case Conversations.list(limit: 200) do
+      {:ok, conversations} ->
+        JSON.send_json(conn, 200, %{
+          conversations: Enum.map(conversations, &sanitize_conversation_record/1)
+        })
+
+      {:error, reason} ->
+        JSON.send_error(conn, 500, "failed to list conversations", %{reason: inspect(reason)})
+    end
+  end
+
+  get "/v1/conversations/:conversation_id" do
+    case Conversations.get(conversation_id) do
+      {:ok, conversation} ->
+        JSON.send_json(conn, 200, %{conversation: sanitize_conversation_record(conversation)})
+
+      {:error, :not_found} ->
+        JSON.send_error(conn, 404, "conversation not found")
+    end
+  end
+
+  patch "/v1/conversations/:conversation_id" do
+    params = conn.body_params || %{}
+
+    case Conversations.update(conversation_id, params) do
+      {:ok, conversation} ->
+        JSON.send_json(conn, 200, %{conversation: sanitize_conversation_record(conversation)})
+
+      {:error, :not_found} ->
+        JSON.send_error(conn, 404, "conversation not found")
+
+      {:error, reason} ->
+        JSON.send_error(conn, 400, "failed to update conversation", %{reason: inspect(reason)})
+    end
+  end
+
+  get "/v1/conversations/:conversation_id/sessions" do
+    case Conversations.list_sessions(conversation_id) do
+      {:ok, sessions} ->
+        JSON.send_json(conn, 200, %{
+          conversation_id: conversation_id,
+          sessions: Enum.map(sessions, &sanitize_thread_record/1)
+        })
+
+      {:error, _} ->
+        JSON.send_error(conn, 404, "conversation not found")
+    end
+  end
+
+  get "/v1/conversations/:conversation_id/history" do
+    conn = fetch_query_params(conn)
+    redact? = parse_bool(conn.query_params["redact"] || "1")
+
+    case Conversations.list_history(conversation_id, redact?: redact?) do
+      {:ok, resp} ->
+        JSON.send_json(conn, 200, resp)
+
+      {:error, :not_found} ->
+        JSON.send_error(conn, 404, "conversation not found")
+
+      {:error, reason} ->
+        JSON.send_error(conn, 500, "failed to load history", %{reason: inspect(reason)})
+    end
+  end
+
+  post "/v1/conversations/:conversation_id/messages" do
+    params = conn.body_params || %{}
+
+    mode = params["mode"] || "queue"
+    configure = normalize_config(params["configure"] || %{})
+    message_id = params["message_id"]
+
+    with :ok <- validate_id_optional("message_id", message_id),
+         {:ok, content} <- extract_and_normalize_content(params) do
+      opts =
+        []
+        |> Keyword.put(:mode, mode)
+        |> Keyword.put(:configure, configure)
+        |> maybe_put_kw(:message_id, message_id)
+
+      case Conversations.enqueue_message(conversation_id, content, opts) do
+        {:ok, %{thread_id: thread_id, message_id: message_id, compacted: compacted}} ->
+          JSON.send_json(conn, 202, %{
+            ok: true,
+            conversation_id: conversation_id,
+            thread_id: thread_id,
+            message_id: message_id,
+            compacted: compacted
+          })
+
+        {:error, :paused} ->
+          JSON.send_error(conn, 409, "thread is paused")
+
+        {:error, :not_found} ->
+          JSON.send_error(conn, 404, "conversation not found")
+
+        {:error, reason} ->
+          JSON.send_error(conn, 500, "enqueue_message failed", %{reason: inspect(reason)})
+      end
+    end
+  end
+
+  post "/v1/conversations/:conversation_id/interrupt" do
+    with {:ok, thread_id} <- Conversations.get_active_thread(conversation_id),
+         :ok <- safe_interrupt(thread_id) do
+      JSON.send_json(conn, 200, %{ok: true})
+    else
+      {:error, :not_found} -> JSON.send_error(conn, 404, "conversation not found")
+      {:error, _} -> JSON.send_error(conn, 404, "thread not found")
+    end
+  end
+
+  post "/v1/conversations/:conversation_id/pause" do
+    with {:ok, thread_id} <- Conversations.get_active_thread(conversation_id),
+         :ok <- safe_pause(thread_id) do
+      JSON.send_json(conn, 200, %{ok: true})
+    else
+      {:error, :not_found} -> JSON.send_error(conn, 404, "conversation not found")
+      {:error, _} -> JSON.send_error(conn, 404, "thread not found")
+    end
+  end
+
+  post "/v1/conversations/:conversation_id/resume" do
+    with {:ok, thread_id} <- Conversations.get_active_thread(conversation_id),
+         :ok <- safe_resume(thread_id) do
+      JSON.send_json(conn, 200, %{ok: true})
+    else
+      {:error, :not_found} -> JSON.send_error(conn, 404, "conversation not found")
+      {:error, _} -> JSON.send_error(conn, 404, "thread not found")
+    end
+  end
+
+  get "/v1/conversations/:conversation_id/events" do
+    case Conversations.get(conversation_id) do
+      {:ok, conversation} ->
+        if conversation.active_thread_id do
+          Conversations.stream_attach_thread(conversation_id, conversation.active_thread_id)
+        end
+
+        last_event_id = List.first(get_req_header(conn, "last-event-id"))
+
+        conn
+        |> put_resp_content_type("text/event-stream")
+        |> put_resp_header("cache-control", "no-cache")
+        |> put_resp_header("connection", "keep-alive")
+        |> send_chunked(200)
+        |> stream_conversation_events(conversation_id, last_event_id)
+
+      {:error, :not_found} ->
+        JSON.send_error(conn, 404, "conversation not found")
+    end
+  end
 
   post "/v1/threads" do
     params = conn.body_params || %{}
@@ -406,6 +574,15 @@ defmodule EchsServer.Router do
     :ok = EchsServer.ThreadEventBuffer.subscribe(thread_id, last_event_id)
 
     case chunk(conn, sse_event("ready", %{thread_id: thread_id})) do
+      {:ok, conn} -> stream_loop(conn)
+      {:error, _} -> conn
+    end
+  end
+
+  defp stream_conversation_events(conn, conversation_id, last_event_id) do
+    :ok = EchsServer.ConversationEventBuffer.subscribe(conversation_id, last_event_id)
+
+    case chunk(conn, sse_event("ready", %{conversation_id: conversation_id})) do
       {:ok, conn} -> stream_loop(conn)
       {:error, _} -> conn
     end
@@ -793,6 +970,7 @@ defmodule EchsServer.Router do
 
     %{
       thread_id: t.thread_id,
+      conversation_id: Map.get(t, :conversation_id),
       parent_thread_id: t.parent_thread_id,
       created_at: iso8601(t.created_at_ms),
       last_activity_at: iso8601(t.last_activity_at_ms),
@@ -808,6 +986,36 @@ defmodule EchsServer.Router do
       coordination_mode: t.coordination_mode,
       tools: tools,
       children: []
+    }
+  end
+
+  defp sanitize_conversation_record(%Conversation{} = c) do
+    tools =
+      case Jason.decode(c.tools_json || "[]") do
+        {:ok, list} when is_list(list) ->
+          list
+          |> Enum.map(fn
+            tool when is_map(tool) -> Map.get(tool, "name") || Map.get(tool, "type")
+            tool when is_binary(tool) -> tool
+            _ -> nil
+          end)
+          |> Enum.reject(&is_nil/1)
+
+        _ ->
+          []
+      end
+
+    %{
+      conversation_id: c.conversation_id,
+      active_thread_id: c.active_thread_id,
+      created_at: iso8601(c.created_at_ms),
+      last_activity_at: iso8601(c.last_activity_at_ms),
+      model: c.model,
+      reasoning: c.reasoning,
+      cwd: c.cwd,
+      instructions: c.instructions,
+      coordination_mode: c.coordination_mode,
+      tools: tools
     }
   end
 

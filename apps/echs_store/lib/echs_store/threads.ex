@@ -13,6 +13,7 @@ defmodule EchsStore.Threads do
       attrs
       |> Map.take([
         :thread_id,
+        :conversation_id,
         :parent_thread_id,
         :created_at_ms,
         :last_activity_at_ms,
@@ -37,6 +38,38 @@ defmodule EchsStore.Threads do
     end
   rescue
     e -> {:error, Exception.message(e)}
+  end
+
+  @spec set_thread_conversation(String.t(), String.t() | nil) ::
+          {:ok, Thread.t()} | {:error, term()}
+  def set_thread_conversation(thread_id, conversation_id) when is_binary(thread_id) do
+    changes = %{conversation_id: conversation_id}
+
+    Repo.get(Thread, thread_id)
+    |> case do
+      nil ->
+        {:error, :not_found}
+
+      thread ->
+        thread
+        |> Ecto.Changeset.change(changes)
+        |> Repo.update()
+    end
+    |> case do
+      {:ok, _} -> {:ok, get_thread!(thread_id)}
+      {:error, reason} -> {:error, reason}
+    end
+  rescue
+    e -> {:error, Exception.message(e)}
+  end
+
+  @spec list_threads_for_conversation(String.t()) :: [Thread.t()]
+  def list_threads_for_conversation(conversation_id) when is_binary(conversation_id) do
+    from(t in Thread,
+      where: t.conversation_id == ^conversation_id,
+      order_by: [asc: t.created_at_ms]
+    )
+    |> Repo.all()
   end
 
   @spec get_thread(String.t()) :: {:ok, Thread.t()} | {:error, :not_found}

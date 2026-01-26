@@ -9,7 +9,9 @@ defmodule EchsServer.Application do
   def start(_type, _args) do
     base_children = [
       {Registry, keys: :unique, name: EchsServer.ThreadEventRegistry},
-      {DynamicSupervisor, strategy: :one_for_one, name: EchsServer.ThreadEventSupervisor}
+      {DynamicSupervisor, strategy: :one_for_one, name: EchsServer.ThreadEventSupervisor},
+      {Registry, keys: :unique, name: EchsServer.ConversationEventRegistry},
+      {DynamicSupervisor, strategy: :one_for_one, name: EchsServer.ConversationEventSupervisor}
     ]
 
     children =

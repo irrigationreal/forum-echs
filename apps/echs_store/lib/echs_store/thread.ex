@@ -6,6 +6,7 @@ defmodule EchsStore.Thread do
   @primary_key {:thread_id, :string, autogenerate: false}
 
   schema "threads" do
+    field(:conversation_id, :string)
     field(:parent_thread_id, :string)
     field(:created_at_ms, :integer)
     field(:last_activity_at_ms, :integer)
