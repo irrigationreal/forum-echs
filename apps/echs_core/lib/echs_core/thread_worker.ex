@@ -666,12 +666,18 @@ defmodule EchsCore.ThreadWorker do
 
   @impl true
   def handle_call(:interrupt, from, state) do
-    if state.stream_pid do
-      state = request_stream_control(state, :interrupt)
-      state = %{state | pending_interrupts: [from | state.pending_interrupts]}
-      {:noreply, state}
-    else
-      {:reply, :ok, touch(%{state | status: :idle})}
+    cond do
+      state.stream_pid ->
+        state = request_stream_control(state, :interrupt)
+        state = %{state | pending_interrupts: [from | state.pending_interrupts]}
+        {:noreply, state}
+
+      state.current_message_id != nil ->
+        state = cancel_stream(state, :interrupted, reply?: true)
+        {:reply, :ok, %{state | status: :idle}}
+
+      true ->
+        {:reply, :ok, touch(%{state | status: :idle})}
     end
   end
 
