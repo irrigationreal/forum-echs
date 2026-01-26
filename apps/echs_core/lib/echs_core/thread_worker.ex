@@ -1282,9 +1282,24 @@ defmodule EchsCore.ThreadWorker do
       "response.output_text.delta" ->
         broadcast(state, :turn_delta, %{thread_id: state.thread_id, content: event["delta"]})
 
+      "response.reasoning_summary.delta" ->
+        delta = reasoning_summary_text(event)
+
+        if delta != "" do
+          broadcast(state, :reasoning_delta, %{thread_id: state.thread_id, delta: delta})
+        end
+
+      "response.reasoning_summary" ->
+        summary = reasoning_summary_text(event)
+
+        if summary != "" do
+          broadcast(state, :reasoning_delta, %{thread_id: state.thread_id, delta: summary})
+        end
+
       "response.output_item.done" ->
         item = event["item"]
         broadcast(state, :item_completed, %{thread_id: state.thread_id, item: item})
+        maybe_broadcast_reasoning(state, item)
         # Collect the item
         Agent.update(items_agent, fn items -> items ++ [item] end)
 
@@ -1298,6 +1313,27 @@ defmodule EchsCore.ThreadWorker do
         :ok
     end
   end
+
+  defp maybe_broadcast_reasoning(state, %{"type" => "reasoning"} = item) do
+    summary = reasoning_summary_text(item)
+
+    if summary != "" do
+      broadcast(state, :reasoning_delta, %{thread_id: state.thread_id, delta: summary})
+    end
+  end
+
+  defp maybe_broadcast_reasoning(_state, _item), do: :ok
+
+  defp reasoning_summary_text(%{"delta" => delta}), do: reasoning_summary_text(delta)
+  defp reasoning_summary_text(%{"summary" => summary}), do: reasoning_summary_text(summary)
+  defp reasoning_summary_text(%{"text" => text}) when is_binary(text), do: text
+  defp reasoning_summary_text(summary) when is_binary(summary), do: summary
+
+  defp reasoning_summary_text(summary) when is_list(summary) do
+    Enum.map_join(summary, "", &reasoning_summary_text/1)
+  end
+
+  defp reasoning_summary_text(_), do: ""
 
   defp execute_tool_call(state, item) do
     case item["type"] do

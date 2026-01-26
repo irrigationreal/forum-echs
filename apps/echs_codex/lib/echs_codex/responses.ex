@@ -32,18 +32,21 @@ defmodule EchsCodex.Responses do
     on_event = Keyword.fetch!(opts, :on_event)
     parallel_tool_calls = Keyword.get(opts, :parallel_tool_calls, true)
 
-    body = %{
-      "model" => model,
-      "instructions" => instructions,
-      "input" => input,
-      "tools" => tools,
-      "tool_choice" => "auto",
-      "parallel_tool_calls" => parallel_tool_calls,
-      "reasoning" => %{"effort" => reasoning},
-      "store" => false,
-      "stream" => true,
-      "include" => []
-    }
+    reasoning_payload = build_reasoning_payload(reasoning)
+
+    body =
+      %{
+        "model" => model,
+        "instructions" => instructions,
+        "input" => input,
+        "tools" => tools,
+        "tool_choice" => "auto",
+        "parallel_tool_calls" => parallel_tool_calls,
+        "store" => false,
+        "stream" => true,
+        "include" => ["reasoning_summary"]
+      }
+      |> maybe_put("reasoning", reasoning_payload)
 
     headers = auth_headers()
 
@@ -130,6 +133,26 @@ defmodule EchsCodex.Responses do
         error
     end
   end
+
+  defp build_reasoning_payload(reasoning) do
+    case reasoning do
+      nil ->
+        %{}
+
+      "" ->
+        %{}
+
+      value when is_binary(value) ->
+        summary = if value == "none", do: "none", else: "auto"
+        %{"effort" => value, "summary" => summary}
+
+      _ ->
+        %{}
+    end
+  end
+
+  defp maybe_put(map, _key, payload) when map_size(payload) == 0, do: map
+  defp maybe_put(map, key, payload), do: Map.put(map, key, payload)
 
   defp build_sse_handler(on_event) do
     fn {:data, data}, {req, resp} ->
