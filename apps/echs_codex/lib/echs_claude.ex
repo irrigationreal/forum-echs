@@ -62,7 +62,8 @@ defmodule EchsClaude do
       "Claude request to #{config.base_url}/v1/messages model=#{model} messages=#{length(messages)} tools=#{length(tools_payload)}"
     end)
 
-    {:ok, state_agent} = Agent.start_link(fn -> %{text: "", blocks: %{}, had_text: false} end)
+    {:ok, state_agent} =
+      Agent.start_link(fn -> %{text: "", blocks: %{}, had_text: false, tool_items: []} end)
 
     handler = build_sse_handler(state_agent, on_event)
 
@@ -136,21 +137,14 @@ defmodule EchsClaude do
     end
   end
 
-  defp start_content_block(state_agent, %{"index" => index, "content_block" => block}, on_event)
+  defp start_content_block(state_agent, %{"index" => index, "content_block" => block}, _on_event)
        when is_map(block) do
     Agent.update(state_agent, fn state ->
       blocks = Map.put(state.blocks, index, normalize_block(block))
       %{state | blocks: blocks}
     end)
 
-    case block do
-      %{"type" => "tool_use"} ->
-        item = tool_block_to_item(block, %{})
-        on_event.(%{"type" => "response.output_item.added", "item" => item})
-
-      _ ->
-        :ok
-    end
+    :ok
   end
 
   defp start_content_block(_state_agent, _event, _on_event), do: :ok
@@ -193,7 +187,7 @@ defmodule EchsClaude do
 
   defp handle_content_delta(_state_agent, _event, _on_event), do: :ok
 
-  defp finish_content_block(state_agent, %{"index" => index}, on_event) do
+  defp finish_content_block(state_agent, %{"index" => index}, _on_event) do
     block =
       Agent.get_and_update(state_agent, fn state ->
         {Map.get(state.blocks, index), %{state | blocks: Map.delete(state.blocks, index)}}
@@ -202,7 +196,13 @@ defmodule EchsClaude do
     case block do
       %{"type" => "tool_use"} ->
         item = tool_block_to_item(block, block_input(block))
-        on_event.(%{"type" => "response.output_item.done", "item" => item})
+
+        Agent.update(state_agent, fn state ->
+          tool_items = state.tool_items ++ [%{index: index, item: item}]
+          %{state | tool_items: tool_items}
+        end)
+
+        :ok
 
       _ ->
         :ok
@@ -212,7 +212,7 @@ defmodule EchsClaude do
   defp finish_content_block(_state_agent, _event, _on_event), do: :ok
 
   defp finish_message(state_agent, on_event) do
-    %{text: text, had_text: had_text} = Agent.get(state_agent, & &1)
+    %{text: text, had_text: had_text, tool_items: tool_items} = Agent.get(state_agent, & &1)
 
     if had_text and String.trim(text) != "" do
       item = %{
@@ -224,7 +224,16 @@ defmodule EchsClaude do
       on_event.(%{"type" => "response.output_item.done", "item" => item})
     end
 
-    Agent.update(state_agent, fn state -> %{state | text: "", had_text: false} end)
+    tool_items
+    |> Enum.sort_by(& &1.index)
+    |> Enum.each(fn %{item: item} ->
+      on_event.(%{"type" => "response.output_item.added", "item" => item})
+      on_event.(%{"type" => "response.output_item.done", "item" => item})
+    end)
+
+    Agent.update(state_agent, fn state ->
+      %{state | text: "", had_text: false, tool_items: []}
+    end)
   end
 
   defp normalize_block(%{"type" => "tool_use"} = block) do
