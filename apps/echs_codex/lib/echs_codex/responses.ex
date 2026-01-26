@@ -34,6 +34,15 @@ defmodule EchsCodex.Responses do
 
     reasoning_payload = build_reasoning_payload(reasoning)
 
+    include =
+      case reasoning_payload do
+        %{"summary" => summary} when summary not in [nil, "", "none"] ->
+          ["reasoning.summary"]
+
+        _ ->
+          []
+      end
+
     body =
       %{
         "model" => model,
@@ -44,7 +53,7 @@ defmodule EchsCodex.Responses do
         "parallel_tool_calls" => parallel_tool_calls,
         "store" => false,
         "stream" => true,
-        "include" => []
+        "include" => include
       }
       |> maybe_put("reasoning", reasoning_payload)
 
