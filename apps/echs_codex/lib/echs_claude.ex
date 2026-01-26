@@ -14,9 +14,10 @@ defmodule EchsClaude do
   @default_base_url "https://api.anthropic.com"
   @default_max_tokens 4096
   @models_cache_ttl_ms 300_000
-  @tool_prefix ""
+  @tool_prefix "mcp_"
   @instructions_marker "<CLAUDE_INSTRUCTIONS>"
   @router_tool_name "echs_tool_router"
+  @claude_code_system "You are Claude Code, Anthropic's official CLI for Claude."
   @default_tool_allowlist [
     "exec_command",
     "write_stdin",
@@ -28,7 +29,7 @@ defmodule EchsClaude do
     "view_image"
   ]
 
-  @required_betas ["oauth-2025-04-20"]
+  @required_betas ["oauth-2025-04-20", "interleaved-thinking-2025-05-14"]
 
   def stream_response(opts) do
     model_alias = Keyword.get(opts, :model, "opus")
@@ -50,7 +51,8 @@ defmodule EchsClaude do
         "model" => model,
         "messages" => messages,
         "max_tokens" => max_tokens,
-        "stream" => true
+        "stream" => true,
+        "system" => [%{"type" => "text", "text" => @claude_code_system}]
       }
       |> maybe_put("tools", tools_payload)
 
@@ -66,7 +68,7 @@ defmodule EchsClaude do
 
     request =
       Req.new(
-        url: "#{config.base_url}/v1/messages",
+        url: "#{config.base_url}/v1/messages?beta=true",
         method: :post,
         headers: headers,
         json: body,
@@ -426,7 +428,7 @@ defmodule EchsClaude do
 
     [
       %{
-        "name" => @router_tool_name,
+        "name" => prefix_tool_name(@router_tool_name),
         "description" =>
           "Dispatch to the available tools. Provide {name: <tool>, arguments: <params>} where name is one of: " <>
             Enum.join(tool_names, ", "),
@@ -454,7 +456,7 @@ defmodule EchsClaude do
         %{
           "type" => "tool_use",
           "id" => call_id,
-          "name" => @router_tool_name,
+          "name" => prefix_tool_name(@router_tool_name),
           "input" => %{"name" => strip_tool_prefix(name), "arguments" => args}
         }
 
@@ -840,7 +842,8 @@ defmodule EchsClaude do
         env_or_setting(["ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"], settings, nil)
         |> normalize_token(),
       beta: env_or_setting(["ANTHROPIC_BETA"], settings, nil),
-      user_agent: env_or_setting(["CLAUDE_CODE_USER_AGENT"], settings, "claude-cli/2.1.12")
+      user_agent:
+        env_or_setting(["CLAUDE_CODE_USER_AGENT"], settings, "claude-cli/2.1.2 (external, cli)")
     }
     |> ensure_token!()
   end
