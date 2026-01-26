@@ -14,7 +14,7 @@ defmodule EchsClaude do
   @default_base_url "https://api.anthropic.com"
   @default_max_tokens 4096
   @models_cache_ttl_ms 300_000
-  @tool_prefix "mcp_"
+  @tool_prefix ""
   @instructions_marker "<CLAUDE_INSTRUCTIONS>"
 
   @required_betas ["oauth-2025-04-20"]
@@ -389,9 +389,14 @@ defmodule EchsClaude do
   end
 
   defp build_tools(tools) when is_list(tools) do
-    Enum.map(tools, fn tool ->
+    tools
+    |> Enum.filter(fn tool ->
+      (tool["type"] == "function" or tool["type"] == nil) and
+        is_binary(tool["name"]) and String.trim(tool["name"]) != ""
+    end)
+    |> Enum.map(fn tool ->
       %{
-        "name" => prefix_tool_name(tool["name"] || ""),
+        "name" => prefix_tool_name(tool["name"]),
         "description" => tool["description"] || "",
         "input_schema" => tool["parameters"] || %{"type" => "object"}
       }
@@ -510,10 +515,14 @@ defmodule EchsClaude do
   defp prefix_tool_name(_), do: @tool_prefix <> "tool"
 
   defp strip_tool_prefix(name) when is_binary(name) do
-    if String.starts_with?(name, @tool_prefix) do
-      String.replace_prefix(name, @tool_prefix, "")
-    else
+    if @tool_prefix == "" do
       name
+    else
+      if String.starts_with?(name, @tool_prefix) do
+        String.replace_prefix(name, @tool_prefix, "")
+      else
+        name
+      end
     end
   end
 
