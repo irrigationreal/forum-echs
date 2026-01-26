@@ -44,7 +44,7 @@ defmodule EchsCodex.Responses do
         "parallel_tool_calls" => parallel_tool_calls,
         "store" => false,
         "stream" => true,
-        "include" => ["reasoning_summary"]
+        "include" => []
       }
       |> maybe_put("reasoning", reasoning_payload)
 
