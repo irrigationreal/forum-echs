@@ -500,10 +500,78 @@ defmodule EchsClaude do
         true -> %{}
       end
 
-    {to_string(name || ""), args}
+    tool_name = to_string(name || "")
+    {tool_name, normalize_router_args(tool_name, args)}
   end
 
   defp unwrap_router_input(_), do: {"", %{}}
+
+  defp normalize_router_args(tool_name, args) when is_binary(args) do
+    case tool_name do
+      "exec_command" -> %{"cmd" => args}
+      "shell" -> %{"command" => args}
+      "write_stdin" -> %{"chars" => args}
+      _ -> %{"input" => args}
+    end
+  end
+
+  defp normalize_router_args(tool_name, args) when is_map(args) do
+    case tool_name do
+      "exec_command" ->
+        args
+        |> copy_missing_key("cmd", ["command", "shell_command", "cmdline"])
+
+      "write_stdin" ->
+        args
+        |> copy_missing_key("session_id", ["sessionId", "session", "sessionID"])
+        |> copy_missing_key("chars", ["input", "stdin", "text"])
+
+      "read_file" ->
+        args
+        |> copy_missing_key("file_path", ["path", "file", "filePath"])
+
+      "list_dir" ->
+        args
+        |> copy_missing_key("dir_path", ["path", "dir", "directory", "folder"])
+
+      "grep_files" ->
+        args
+        |> copy_missing_key("paths", ["path", "root", "roots", "dirs", "directories"])
+
+      "apply_patch" ->
+        args
+        |> copy_missing_key("patch", ["diff", "content"])
+
+      "view_image" ->
+        args
+        |> copy_missing_key("path", ["file_path", "file", "filePath"])
+
+      _ ->
+        args
+    end
+  end
+
+  defp normalize_router_args(_tool_name, args), do: args
+
+  defp copy_missing_key(map, dest, sources) when is_map(map) do
+    if Map.has_key?(map, dest) do
+      map
+    else
+      value =
+        Enum.find_value(sources, fn key ->
+          case map do
+            %{^key => val} -> val
+            _ -> Map.get(map, key)
+          end
+        end)
+
+      if is_nil(value) do
+        map
+      else
+        Map.put(map, dest, value)
+      end
+    end
+  end
 
   defp filter_claude_tools(tools) when is_list(tools) do
     case claude_tool_allowlist() do
