@@ -242,11 +242,11 @@ defmodule EchsClaude do
 
   defp block_input(block) do
     cond do
-      is_map(block["input"]) ->
-        block["input"]
-
       is_binary(block["input_json"]) and block["input_json"] != "" ->
         decode_json(block["input_json"])
+
+      is_map(block["input"]) ->
+        block["input"]
 
       true ->
         %{}
