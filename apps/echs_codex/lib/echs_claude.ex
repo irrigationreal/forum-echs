@@ -17,7 +17,7 @@ defmodule EchsClaude do
   @tool_prefix "mcp_"
   @instructions_marker "<CLAUDE_INSTRUCTIONS>"
 
-  @required_betas ["oauth-2025-04-20", "interleaved-thinking-2025-05-14"]
+  @required_betas ["oauth-2025-04-20"]
 
   def stream_response(opts) do
     model_alias = Keyword.get(opts, :model, "opus")
@@ -55,7 +55,7 @@ defmodule EchsClaude do
 
     request =
       Req.new(
-        url: "#{config.base_url}/v1/messages?beta=true",
+        url: "#{config.base_url}/v1/messages",
         method: :post,
         headers: headers,
         json: body,
@@ -601,8 +601,7 @@ defmodule EchsClaude do
         env_or_setting(["ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"], settings, nil)
         |> normalize_token(),
       beta: env_or_setting(["ANTHROPIC_BETA"], settings, nil),
-      user_agent:
-        env_or_setting(["CLAUDE_CODE_USER_AGENT"], settings, "claude-cli/2.1.2 (external, cli)")
+      user_agent: env_or_setting(["CLAUDE_CODE_USER_AGENT"], settings, "claude-cli/2.1.12")
     }
     |> ensure_token!()
   end
