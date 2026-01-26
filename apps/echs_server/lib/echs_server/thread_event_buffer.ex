@@ -13,12 +13,16 @@ defmodule EchsServer.ThreadEventBuffer do
     GenServer.start_link(__MODULE__, thread_id, name: via(thread_id))
   end
 
+  def ensure_started(thread_id) do
+    do_ensure_started(thread_id)
+  end
+
   def subscribe(thread_id, last_event_id \\ nil) do
-    {:ok, pid} = ensure_started(thread_id)
+    {:ok, pid} = do_ensure_started(thread_id)
     GenServer.call(pid, {:subscribe, self(), last_event_id})
   end
 
-  defp ensure_started(thread_id) do
+  defp do_ensure_started(thread_id) do
     case Registry.lookup(EchsServer.ThreadEventRegistry, thread_id) do
       [{pid, _}] ->
         {:ok, pid}

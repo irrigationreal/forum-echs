@@ -69,6 +69,8 @@ defmodule EchsServer.Router do
 
     case EchsCore.create_thread(opts) do
       {:ok, thread_id} ->
+        _ = EchsServer.ThreadEventBuffer.ensure_started(thread_id)
+
         config =
           %{}
           |> maybe_put_config("tools", tools)
@@ -280,6 +282,8 @@ defmodule EchsServer.Router do
 
     with :ok <- validate_id_optional("message_id", message_id),
          {:ok, content} <- extract_and_normalize_content(params) do
+      _ = EchsServer.ThreadEventBuffer.ensure_started(thread_id)
+
       opts =
         []
         |> Keyword.put(:mode, mode)
