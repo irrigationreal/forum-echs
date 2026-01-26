@@ -16,6 +16,7 @@ defmodule EchsClaude do
   @models_cache_ttl_ms 300_000
   @tool_prefix ""
   @instructions_marker "<CLAUDE_INSTRUCTIONS>"
+  @router_tool_name "echs_tool_router"
   @default_tool_allowlist [
     "exec_command",
     "write_stdin",
@@ -40,9 +41,9 @@ defmodule EchsClaude do
     config = load_config()
     model = resolve_model_alias(model_alias, config)
 
+    tools_payload = build_tools(tools)
     {input, _injected?} = ensure_instructions_in_first_user_message(input, instructions)
     messages = build_messages(input)
-    tools_payload = build_tools(tools)
 
     body =
       %{
@@ -235,16 +236,17 @@ defmodule EchsClaude do
     name = block["name"] || ""
     call_id = block["id"] || block["tool_use_id"] || "toolu_" <> random_id()
     stripped_name = strip_tool_prefix(name)
+    {tool_name, tool_input} = maybe_unwrap_router(stripped_name, input)
 
     arguments =
-      case input do
-        %{} -> Jason.encode!(input)
+      case tool_input do
+        %{} -> Jason.encode!(tool_input)
         other -> Jason.encode!(%{"input" => other})
       end
 
     %{
       "type" => "function_call",
-      "name" => stripped_name,
+      "name" => tool_name,
       "arguments" => arguments,
       "call_id" => call_id
     }
@@ -298,12 +300,7 @@ defmodule EchsClaude do
       %{
         "role" => "assistant",
         "content" => [
-          %{
-            "type" => "tool_use",
-            "id" => call_id,
-            "name" => prefix_tool_name(name),
-            "input" => args
-          }
+          tool_use_block(name, call_id, args)
         ]
       }
     ]
@@ -323,12 +320,7 @@ defmodule EchsClaude do
       %{
         "role" => "assistant",
         "content" => [
-          %{
-            "type" => "tool_use",
-            "id" => call_id,
-            "name" => prefix_tool_name("shell"),
-            "input" => %{"command" => command}
-          }
+          tool_use_block("shell", call_id, %{"command" => command})
         ]
       }
     ]
@@ -399,22 +391,119 @@ defmodule EchsClaude do
   end
 
   defp build_tools(tools) when is_list(tools) do
-    tools
-    |> Enum.filter(fn tool ->
-      (tool["type"] == "function" or tool["type"] == nil) and
-        is_binary(tool["name"]) and String.trim(tool["name"]) != ""
-    end)
-    |> filter_claude_tools()
-    |> Enum.map(fn tool ->
-      %{
-        "name" => prefix_tool_name(tool["name"]),
-        "description" => tool["description"] || "",
-        "input_schema" => tool["parameters"] || %{"type" => "object"}
-      }
-    end)
+    filtered =
+      tools
+      |> Enum.filter(fn tool ->
+        (tool["type"] == "function" or tool["type"] == nil) and
+          is_binary(tool["name"]) and String.trim(tool["name"]) != ""
+      end)
+      |> filter_claude_tools()
+
+    case claude_tool_mode() do
+      :direct ->
+        Enum.map(filtered, fn tool ->
+          %{
+            "name" => prefix_tool_name(tool["name"]),
+            "description" => tool["description"] || "",
+            "input_schema" => tool["parameters"] || %{"type" => "object"}
+          }
+        end)
+
+      :router ->
+        build_router_tool(filtered)
+    end
   end
 
   defp build_tools(_), do: []
+
+  defp build_router_tool([]), do: []
+
+  defp build_router_tool(tools) when is_list(tools) do
+    tool_names =
+      tools
+      |> Enum.map(& &1["name"])
+      |> Enum.reject(&is_nil/1)
+
+    [
+      %{
+        "name" => @router_tool_name,
+        "description" =>
+          "Dispatch to the available tools. Provide {name: <tool>, arguments: <params>} where name is one of: " <>
+            Enum.join(tool_names, ", "),
+        "input_schema" => %{
+          "type" => "object",
+          "properties" => %{
+            "name" => %{
+              "type" => "string",
+              "description" => "Tool name to call."
+            },
+            "arguments" => %{
+              "type" => "object",
+              "description" => "Arguments for the selected tool."
+            }
+          },
+          "required" => ["name"]
+        }
+      }
+    ]
+  end
+
+  defp tool_use_block(name, call_id, args) do
+    case claude_tool_mode() do
+      :router ->
+        %{
+          "type" => "tool_use",
+          "id" => call_id,
+          "name" => @router_tool_name,
+          "input" => %{"name" => strip_tool_prefix(name), "arguments" => args}
+        }
+
+      :direct ->
+        %{
+          "type" => "tool_use",
+          "id" => call_id,
+          "name" => prefix_tool_name(name),
+          "input" => args
+        }
+    end
+  end
+
+  defp maybe_unwrap_router(@router_tool_name, input) do
+    case unwrap_router_input(input) do
+      {name, args} when is_binary(name) and name != "" ->
+        {name, args}
+
+      _ ->
+        {@router_tool_name, input}
+    end
+  end
+
+  defp maybe_unwrap_router(name, input), do: {name, input}
+
+  defp unwrap_router_input(input) when is_map(input) do
+    name =
+      input["name"] ||
+        input["tool"] ||
+        input["tool_name"] ||
+        input[:name] ||
+        input[:tool] ||
+        input[:tool_name]
+
+    args =
+      cond do
+        is_map(input["arguments"]) -> input["arguments"]
+        is_map(input["args"]) -> input["args"]
+        is_map(input["input"]) -> input["input"]
+        is_map(input[:arguments]) -> input[:arguments]
+        is_map(input[:args]) -> input[:args]
+        is_map(input[:input]) -> input[:input]
+        true -> %{}
+      end
+
+    {to_string(name || ""), args}
+  end
+
+  defp unwrap_router_input(_), do: {"", %{}}
 
   defp filter_claude_tools(tools) when is_list(tools) do
     case claude_tool_allowlist() do
@@ -458,6 +547,22 @@ defmodule EchsClaude do
             else
               tools
             end
+        end
+    end
+  end
+
+  defp claude_tool_mode do
+    case System.get_env("ECHS_CLAUDE_TOOL_MODE") do
+      nil ->
+        :router
+
+      value ->
+        normalized = String.downcase(String.trim(value))
+
+        cond do
+          normalized in ["direct", "raw"] -> :direct
+          normalized in ["router", "proxy"] -> :router
+          true -> :router
         end
     end
   end
