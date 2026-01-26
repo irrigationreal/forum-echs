@@ -5,7 +5,7 @@ defmodule EchsServer.Router do
 
   import Plug.Conn
 
-  alias EchsServer.{Conversations, JSON}
+  alias EchsServer.{Conversations, JSON, Models}
   alias EchsStore.{Conversation, Message, Thread}
 
   plug(EchsServer.AuthPlug)
@@ -23,6 +23,10 @@ defmodule EchsServer.Router do
 
   get "/healthz" do
     JSON.send_json(conn, 200, %{ok: true})
+  end
+
+  get "/v1/models" do
+    JSON.send_json(conn, 200, Models.catalog())
   end
 
   get "/openapi.json" do

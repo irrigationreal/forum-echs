@@ -331,24 +331,37 @@ defmodule EchsServer.Conversations do
     config = compaction_config()
 
     with {:ok, items} <- store_load_history(thread_id) do
+      usage_ratio = usage_ratio_for_thread(thread_id, conversation.model, config.threshold)
       estimated = estimate_context_chars(items) + estimate_content_chars(content)
 
-      if estimated < config.threshold * config.window_chars do
-        {:ok, thread_id, content}
-      else
-        case build_compaction_message(conversation, items, content, config) do
-          {:ok, compacted_content} ->
-            with {:ok, new_thread_id} <-
-                   create_and_attach_thread(%{conversation | active_thread_id: nil}) do
-              {:ok, new_thread_id, compacted_content}
-            end
+      cond do
+        is_number(usage_ratio) and usage_ratio < config.threshold ->
+          {:ok, thread_id, content}
 
-          {:error, _} ->
-            {:ok, thread_id, content}
-        end
+        is_number(usage_ratio) ->
+          maybe_compact_with_summary(conversation, thread_id, content, items, config)
+
+        estimated < config.threshold * config.window_chars ->
+          {:ok, thread_id, content}
+
+        true ->
+          maybe_compact_with_summary(conversation, thread_id, content, items, config)
       end
     else
       _ -> {:ok, thread_id, content}
+    end
+  end
+
+  defp maybe_compact_with_summary(conversation, thread_id, content, items, config) do
+    case build_compaction_message(conversation, items, content, config) do
+      {:ok, compacted_content} ->
+        with {:ok, new_thread_id} <-
+               create_and_attach_thread(%{conversation | active_thread_id: nil}) do
+          {:ok, new_thread_id, compacted_content}
+        end
+
+      {:error, _} ->
+        {:ok, thread_id, content}
     end
   end
 
@@ -627,6 +640,48 @@ defmodule EchsServer.Conversations do
       last_reasoning: env_int("ECHS_COMPACTION_LAST_REASONING", 10)
     }
   end
+
+  defp usage_ratio_for_thread(thread_id, model, _threshold) do
+    case safe_get_state(thread_id) do
+      {:ok, state} ->
+        usage = Map.get(state, :last_usage)
+        prompt_tokens = extract_prompt_tokens(usage)
+        window = EchsServer.Models.context_window_tokens(model || @default_model)
+
+        if is_integer(prompt_tokens) and window > 0 do
+          prompt_tokens / window
+        else
+          nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp extract_prompt_tokens(%{} = usage) do
+    normalize_int(
+      Map.get(usage, "input_tokens") ||
+        Map.get(usage, :input_tokens) ||
+        Map.get(usage, "prompt_tokens") ||
+        Map.get(usage, :prompt_tokens)
+    )
+  end
+
+  defp extract_prompt_tokens(_), do: nil
+
+  defp normalize_int(nil), do: nil
+  defp normalize_int(value) when is_integer(value), do: value
+  defp normalize_int(value) when is_float(value), do: trunc(value)
+
+  defp normalize_int(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, _} -> int
+      :error -> nil
+    end
+  end
+
+  defp normalize_int(_), do: nil
 
   defp normalize_config(params) when is_map(params) do
     config = Map.get(params, "config", params)

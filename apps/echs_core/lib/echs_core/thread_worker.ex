@@ -82,6 +82,8 @@ defmodule EchsCore.ThreadWorker do
     :status,
     :current_message_id,
     :current_turn_started_at_ms,
+    :last_usage,
+    :last_usage_at_ms,
     :message_ids,
     :message_id_set,
     :message_log,
@@ -391,6 +393,8 @@ defmodule EchsCore.ThreadWorker do
       status: :idle,
       current_message_id: nil,
       current_turn_started_at_ms: nil,
+      last_usage: Keyword.get(opts, :last_usage, nil),
+      last_usage_at_ms: Keyword.get(opts, :last_usage_at_ms, nil),
       message_ids: message_ids,
       message_id_set: MapSet.new(message_ids),
       message_log: message_log,
@@ -733,6 +737,13 @@ defmodule EchsCore.ThreadWorker do
   end
 
   @impl true
+  def handle_info({:usage_update, usage}, state) do
+    state = %{state | last_usage: usage, last_usage_at_ms: now_ms()}
+    broadcast(state, :turn_usage, %{thread_id: state.thread_id, usage: usage})
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_info({:stream_complete, ref, result, collected_items}, state) do
     if ref == state.stream_ref do
       state = clear_stream(state)
@@ -908,6 +919,7 @@ defmodule EchsCore.ThreadWorker do
     {result, collected_items} =
       try do
         on_event = fn event ->
+          maybe_send_usage(parent, event)
           handle_sse_event(state, event, items_agent)
           poll_stream_control()
           maybe_abort_after_event(event)
@@ -1315,6 +1327,73 @@ defmodule EchsCore.ThreadWorker do
         :ok
     end
   end
+
+  defp maybe_send_usage(parent, %{"type" => "response.completed"} = event) do
+    case extract_usage(event) do
+      nil -> :ok
+      usage -> send(parent, {:usage_update, usage})
+    end
+  end
+
+  defp maybe_send_usage(_parent, _event), do: :ok
+
+  defp extract_usage(%{"response" => %{"usage" => usage}}) when is_map(usage),
+    do: normalize_usage(usage)
+
+  defp extract_usage(%{"usage" => usage}) when is_map(usage),
+    do: normalize_usage(usage)
+
+  defp extract_usage(_), do: nil
+
+  defp normalize_usage(usage) when is_map(usage) do
+    input_tokens =
+      normalize_int(
+        Map.get(usage, "input_tokens") ||
+          Map.get(usage, :input_tokens) ||
+          Map.get(usage, "prompt_tokens") ||
+          Map.get(usage, :prompt_tokens)
+      )
+
+    output_tokens =
+      normalize_int(
+        Map.get(usage, "output_tokens") ||
+          Map.get(usage, :output_tokens) ||
+          Map.get(usage, "completion_tokens") ||
+          Map.get(usage, :completion_tokens)
+      )
+
+    total_tokens =
+      normalize_int(Map.get(usage, "total_tokens") || Map.get(usage, :total_tokens)) ||
+        case {input_tokens, output_tokens} do
+          {input, output} when is_integer(input) and is_integer(output) -> input + output
+          _ -> nil
+        end
+
+    if input_tokens || output_tokens || total_tokens do
+      %{
+        "input_tokens" => input_tokens,
+        "output_tokens" => output_tokens,
+        "total_tokens" => total_tokens
+      }
+    else
+      nil
+    end
+  end
+
+  defp normalize_usage(_), do: nil
+
+  defp normalize_int(nil), do: nil
+  defp normalize_int(value) when is_integer(value), do: value
+  defp normalize_int(value) when is_float(value), do: trunc(value)
+
+  defp normalize_int(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, _} -> int
+      :error -> nil
+    end
+  end
+
+  defp normalize_int(_), do: nil
 
   defp maybe_broadcast_reasoning(state, %{"type" => "reasoning"} = item) do
     summary = reasoning_summary_text(item)
