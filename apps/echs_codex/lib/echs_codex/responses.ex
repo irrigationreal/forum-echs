@@ -33,15 +33,7 @@ defmodule EchsCodex.Responses do
     parallel_tool_calls = Keyword.get(opts, :parallel_tool_calls, true)
 
     reasoning_payload = build_reasoning_payload(reasoning)
-
-    include =
-      case reasoning_payload do
-        %{"summary" => summary} when summary not in [nil, "", "none"] ->
-          ["reasoning.summary"]
-
-        _ ->
-          []
-      end
+    summary_requested = reasoning_summary_requested?(reasoning_payload)
 
     body =
       %{
@@ -52,8 +44,7 @@ defmodule EchsCodex.Responses do
         "tool_choice" => "auto",
         "parallel_tool_calls" => parallel_tool_calls,
         "store" => false,
-        "stream" => true,
-        "include" => include
+        "stream" => true
       }
       |> maybe_put("reasoning", reasoning_payload)
 
@@ -105,7 +96,14 @@ defmodule EchsCodex.Responses do
           "Codex error: status=#{status} body=#{inspect(resp_body)} headers=#{inspect(resp.headers)}"
         )
 
-        {:error, %{status: status, body: resp_body}}
+        maybe_retry_without_summary(
+          status,
+          resp_body,
+          summary_requested,
+          body,
+          headers,
+          on_event
+        )
 
       {:error, _} = error ->
         error
@@ -156,7 +154,8 @@ defmodule EchsCodex.Responses do
         "auto" -> "auto"
         "none" -> "none"
         "detailed" -> "detailed"
-        "short" -> "short"
+        "concise" -> "concise"
+        "short" -> "concise"
         _ -> nil
       end
 
@@ -184,6 +183,71 @@ defmodule EchsCodex.Responses do
 
   defp maybe_put(map, _key, payload) when map_size(payload) == 0, do: map
   defp maybe_put(map, key, payload), do: Map.put(map, key, payload)
+
+  defp reasoning_summary_requested?(%{"summary" => summary})
+       when summary not in [nil, "", "none"],
+       do: true
+
+  defp reasoning_summary_requested?(_), do: false
+
+  defp maybe_retry_without_summary(status, _resp_body, true, body, headers, on_event)
+       when status in [400, 403] do
+    Logger.warn("Retrying Codex request without reasoning summary (status=#{status}).")
+
+    body = drop_reasoning_summary(body)
+
+    request =
+      Req.new(
+        url: @base_url,
+        method: :post,
+        headers: headers,
+        json: body,
+        receive_timeout: :infinity,
+        into: build_sse_handler(on_event)
+      )
+
+    case Req.request(request) do
+      {:ok, %{status: 200}} = result ->
+        result
+
+      {:ok, %{status: retry_status, body: retry_body}} ->
+        {:error, %{status: retry_status, body: retry_body}}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp maybe_retry_without_summary(
+         status,
+         resp_body,
+         _summary_requested,
+         _body,
+         _headers,
+         _on_event
+       ),
+       do: {:error, %{status: status, body: resp_body}}
+
+  defp drop_reasoning_summary(body) do
+    update_in(body, ["reasoning"], fn reasoning ->
+      case reasoning do
+        %{} = map ->
+          map
+          |> Map.delete("summary")
+          |> case do
+            %{} = cleaned when map_size(cleaned) == 0 -> nil
+            cleaned -> cleaned
+          end
+
+        other ->
+          other
+      end
+    end)
+    |> case do
+      %{"reasoning" => nil} = updated -> Map.delete(updated, "reasoning")
+      updated -> updated
+    end
+  end
 
   defp build_sse_handler(on_event) do
     fn {:data, data}, {req, resp} ->
