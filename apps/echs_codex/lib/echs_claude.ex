@@ -376,7 +376,8 @@ defmodule EchsClaude do
   defp normalize_content(_), do: []
 
   defp merge_consecutive_roles(messages) do
-    Enum.reduce(messages, [], fn message, acc ->
+    messages
+    |> Enum.reduce([], fn message, acc ->
       case acc do
         [] ->
           [message]
@@ -384,12 +385,13 @@ defmodule EchsClaude do
         [%{"role" => role, "content" => content} = last | rest] ->
           if role == message["role"] do
             merged = %{last | "content" => content ++ List.wrap(message["content"])}
-            rest ++ [merged]
+            [merged | rest]
           else
-            acc ++ [message]
+            [message | acc]
           end
       end
     end)
+    |> Enum.reverse()
   end
 
   defp build_tools(tools) when is_list(tools) do
