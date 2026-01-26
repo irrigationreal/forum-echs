@@ -752,12 +752,16 @@ defmodule EchsCore.ThreadWorker do
 
       case result do
         {:ok, _} ->
-          state = append_history_items(state, collected_items)
-
           tool_calls =
             Enum.filter(collected_items, fn item ->
               item["type"] in ["function_call", "local_shell_call"]
             end)
+
+          {normalized_items, assistant_events} =
+            normalize_assistant_items(collected_items, tool_calls == [])
+
+          state = append_history_items(state, normalized_items)
+          emit_assistant_events(state, assistant_events)
 
           if tool_calls != [] do
             {tool_results, state} = execute_tool_calls(state, tool_calls)
@@ -1386,8 +1390,14 @@ defmodule EchsCore.ThreadWorker do
 
       "response.output_item.done" ->
         item = event["item"]
-        broadcast(state, :item_completed, %{thread_id: state.thread_id, item: item})
-        maybe_broadcast_reasoning(state, item)
+
+        if assistant_message?(item) do
+          :ok
+        else
+          broadcast(state, :item_completed, %{thread_id: state.thread_id, item: item})
+          maybe_broadcast_reasoning(state, item)
+        end
+
         # Collect the item
         Agent.update(items_agent, fn items -> items ++ [item] end)
 
@@ -1482,6 +1492,94 @@ defmodule EchsCore.ThreadWorker do
   end
 
   defp normalize_int(_), do: nil
+
+  defp assistant_message?(%{"type" => "message", "role" => "assistant"}), do: true
+  defp assistant_message?(_), do: false
+
+  defp normalize_assistant_items(items, keep_last_message?) when is_list(items) do
+    assistant_indexes =
+      items
+      |> Enum.with_index()
+      |> Enum.filter(fn {item, _idx} -> assistant_message?(item) end)
+      |> Enum.map(fn {_item, idx} -> idx end)
+
+    last_index =
+      case {keep_last_message?, assistant_indexes} do
+        {true, []} -> nil
+        {true, _} -> List.last(assistant_indexes)
+        _ -> nil
+      end
+
+    {normalized_rev, events_rev} =
+      items
+      |> Enum.with_index()
+      |> Enum.reduce({[], []}, fn {item, idx}, {items_acc, events_acc} ->
+        if assistant_message?(item) do
+          if keep_last_message? and idx == last_index do
+            {[item | items_acc], [{:assistant, item} | events_acc]}
+          else
+            text = extract_message_text(item)
+            reasoning_item = assistant_to_reasoning(item, text)
+            {[reasoning_item | items_acc], [{:reasoning, text} | events_acc]}
+          end
+        else
+          {[item | items_acc], events_acc}
+        end
+      end)
+
+    {Enum.reverse(normalized_rev), Enum.reverse(events_rev)}
+  end
+
+  defp normalize_assistant_items(items, _keep_last_message?), do: {items, []}
+
+  defp emit_assistant_events(_state, []), do: :ok
+
+  defp emit_assistant_events(state, events) do
+    Enum.each(events, fn
+      {:assistant, item} ->
+        broadcast(state, :item_completed, %{thread_id: state.thread_id, item: item})
+
+      {:reasoning, text} ->
+        case format_reasoning_delta(text) do
+          nil ->
+            :ok
+
+          delta ->
+            broadcast(state, :reasoning_delta, %{thread_id: state.thread_id, delta: delta})
+        end
+    end)
+  end
+
+  defp format_reasoning_delta(text) when is_binary(text) do
+    trimmed = String.trim(text)
+    if trimmed == "", do: nil, else: trimmed <> "\n\n"
+  end
+
+  defp format_reasoning_delta(_), do: nil
+
+  defp assistant_to_reasoning(_item, text) do
+    %{
+      "type" => "reasoning",
+      "summary" => text
+    }
+  end
+
+  defp extract_message_text(%{"content" => content}), do: extract_text_content(content)
+  defp extract_message_text(_), do: ""
+
+  defp extract_text_content(content) when is_binary(content), do: content
+
+  defp extract_text_content(content) when is_list(content) do
+    content
+    |> Enum.map(&extract_text_content/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join(" ")
+  end
+
+  defp extract_text_content(%{"type" => "text", "text" => text}) when is_binary(text), do: text
+  defp extract_text_content(%{"text" => text}) when is_binary(text), do: text
+  defp extract_text_content(%{"content" => content}), do: extract_text_content(content)
+  defp extract_text_content(_), do: ""
 
   defp maybe_broadcast_reasoning(state, %{"type" => "reasoning"} = item) do
     summary = reasoning_summary_text(item)
