@@ -16,6 +16,16 @@ defmodule EchsClaude do
   @models_cache_ttl_ms 300_000
   @tool_prefix ""
   @instructions_marker "<CLAUDE_INSTRUCTIONS>"
+  @default_tool_allowlist [
+    "exec_command",
+    "write_stdin",
+    "shell",
+    "read_file",
+    "list_dir",
+    "grep_files",
+    "apply_patch",
+    "view_image"
+  ]
 
   @required_betas ["oauth-2025-04-20"]
 
@@ -394,6 +404,7 @@ defmodule EchsClaude do
       (tool["type"] == "function" or tool["type"] == nil) and
         is_binary(tool["name"]) and String.trim(tool["name"]) != ""
     end)
+    |> filter_claude_tools()
     |> Enum.map(fn tool ->
       %{
         "name" => prefix_tool_name(tool["name"]),
@@ -404,6 +415,52 @@ defmodule EchsClaude do
   end
 
   defp build_tools(_), do: []
+
+  defp filter_claude_tools(tools) when is_list(tools) do
+    case claude_tool_allowlist() do
+      :all ->
+        tools
+
+      allowlist when is_list(allowlist) ->
+        Enum.filter(tools, fn tool ->
+          name = tool["name"] || ""
+          Enum.member?(allowlist, name)
+        end)
+    end
+  end
+
+  defp filter_claude_tools(_), do: []
+
+  defp claude_tool_allowlist do
+    case System.get_env("ECHS_CLAUDE_TOOL_ALLOWLIST") do
+      nil ->
+        @default_tool_allowlist
+
+      value ->
+        normalized = String.downcase(String.trim(value))
+
+        cond do
+          normalized in ["*", "all", "true"] ->
+            :all
+
+          normalized in ["none", "false"] ->
+            []
+
+          true ->
+            tools =
+              value
+              |> String.split(",", trim: true)
+              |> Enum.map(&String.trim/1)
+              |> Enum.reject(&(&1 == ""))
+
+            if tools == [] do
+              @default_tool_allowlist
+            else
+              tools
+            end
+        end
+    end
+  end
 
   defp ensure_instructions_in_first_user_message(items, instructions) do
     instructions = to_string(instructions || "")
