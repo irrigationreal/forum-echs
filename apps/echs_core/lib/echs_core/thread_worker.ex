@@ -68,6 +68,8 @@ defmodule EchsCore.ThreadWorker do
   Network: Unrestricted
   """
 
+  @claude_instructions_marker "<CLAUDE_INSTRUCTIONS>"
+
   defstruct [
     :thread_id,
     :parent_thread_id,
@@ -937,14 +939,25 @@ defmodule EchsCore.ThreadWorker do
           |> expand_uploads_for_api()
 
         result =
-          EchsCodex.stream_response(
-            model: state.model,
-            instructions: state.instructions,
-            input: api_input,
-            tools: state.tools,
-            reasoning: state.reasoning,
-            on_event: on_event
-          )
+          if claude_model?(state.model) do
+            EchsClaude.stream_response(
+              model: state.model,
+              instructions: state.instructions,
+              input: api_input,
+              tools: state.tools,
+              reasoning: state.reasoning,
+              on_event: on_event
+            )
+          else
+            EchsCodex.stream_response(
+              model: state.model,
+              instructions: state.instructions,
+              input: api_input,
+              tools: state.tools,
+              reasoning: state.reasoning,
+              on_event: on_event
+            )
+          end
 
         {result, Agent.get(items_agent, & &1)}
       catch
@@ -1102,10 +1115,13 @@ defmodule EchsCore.ThreadWorker do
   defp apply_turn_config(state, _opts), do: state
 
   defp add_user_message(state, content) when is_binary(content) do
+    content_items = [%{"type" => "input_text", "text" => content}]
+    content_items = maybe_inject_claude_instructions(state, content_items)
+
     user_item = %{
       "type" => "message",
       "role" => "user",
-      "content" => [%{"type" => "input_text", "text" => content}]
+      "content" => content_items
     }
 
     state
@@ -1118,6 +1134,8 @@ defmodule EchsCore.ThreadWorker do
       content
       |> Enum.map(&normalize_message_content_item/1)
       |> Enum.reject(&is_nil/1)
+
+    content_items = maybe_inject_claude_instructions(state, content_items)
 
     user_item = %{
       "type" => "message",
@@ -1150,6 +1168,62 @@ defmodule EchsCore.ThreadWorker do
   end
 
   defp normalize_message_content_item(_item), do: nil
+
+  defp maybe_inject_claude_instructions(state, content_items) when is_list(content_items) do
+    instructions = to_string(state.instructions || "")
+
+    cond do
+      instructions == "" ->
+        content_items
+
+      not claude_model?(state.model) ->
+        content_items
+
+      claude_instructions_in_history?(state.history_items) ->
+        content_items
+
+      true ->
+        marker = "#{@claude_instructions_marker}\n#{instructions}\n</CLAUDE_INSTRUCTIONS>\n\n"
+        [%{"type" => "input_text", "text" => marker} | content_items]
+    end
+  end
+
+  defp maybe_inject_claude_instructions(_state, content_items), do: content_items
+
+  defp claude_instructions_in_history?(items) when is_list(items) do
+    Enum.any?(items, fn
+      %{"type" => "message", "role" => "user", "content" => content} ->
+        claude_marker_in_content?(content)
+
+      _ ->
+        false
+    end)
+  end
+
+  defp claude_instructions_in_history?(_), do: false
+
+  defp claude_marker_in_content?(content) when is_list(content) do
+    Enum.any?(content, fn
+      %{"text" => text} when is_binary(text) ->
+        String.contains?(text, @claude_instructions_marker)
+
+      _ ->
+        false
+    end)
+  end
+
+  defp claude_marker_in_content?(content) when is_binary(content) do
+    String.contains?(content, @claude_instructions_marker)
+  end
+
+  defp claude_marker_in_content?(_), do: false
+
+  defp claude_model?(model) when is_binary(model) do
+    normalized = model |> String.trim() |> String.downcase()
+    normalized in ["opus", "sonnet", "haiku"] or String.starts_with?(normalized, "claude-")
+  end
+
+  defp claude_model?(_), do: false
 
   defp enqueue_turn(state, from, content, opts, message_id) do
     turn = %{
@@ -1329,6 +1403,20 @@ defmodule EchsCore.ThreadWorker do
   end
 
   defp maybe_send_usage(parent, %{"type" => "response.completed"} = event) do
+    case extract_usage(event) do
+      nil -> :ok
+      usage -> send(parent, {:usage_update, usage})
+    end
+  end
+
+  defp maybe_send_usage(parent, %{"type" => "message_start"} = event) do
+    case extract_usage(event) do
+      nil -> :ok
+      usage -> send(parent, {:usage_update, usage})
+    end
+  end
+
+  defp maybe_send_usage(parent, %{"type" => "message_delta"} = event) do
     case extract_usage(event) do
       nil -> :ok
       usage -> send(parent, {:usage_update, usage})

@@ -438,15 +438,27 @@ defmodule EchsServer.Conversations do
     ]
 
     result =
-      EchsCodex.stream_response(
-        model: summary_model,
-        instructions: compaction_instructions(),
-        input: input,
-        tools: [],
-        reasoning: "none",
-        parallel_tool_calls: false,
-        on_event: on_event
-      )
+      if claude_model?(summary_model) do
+        EchsClaude.stream_response(
+          model: summary_model,
+          instructions: compaction_instructions(),
+          input: input,
+          tools: [],
+          reasoning: "none",
+          parallel_tool_calls: false,
+          on_event: on_event
+        )
+      else
+        EchsCodex.stream_response(
+          model: summary_model,
+          instructions: compaction_instructions(),
+          input: input,
+          tools: [],
+          reasoning: "none",
+          parallel_tool_calls: false,
+          on_event: on_event
+        )
+      end
 
     output = Agent.get(agent, & &1)
     Agent.stop(agent)
@@ -465,6 +477,13 @@ defmodule EchsServer.Conversations do
     ]
     |> Enum.join(" ")
   end
+
+  defp claude_model?(model) when is_binary(model) do
+    normalized = model |> String.trim() |> String.downcase()
+    normalized in ["opus", "sonnet", "haiku"] or String.starts_with?(normalized, "claude-")
+  end
+
+  defp claude_model?(_), do: false
 
   defp build_transcript(items, max_chars) do
     text =
