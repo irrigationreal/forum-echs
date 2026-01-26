@@ -1225,16 +1225,18 @@ defmodule EchsCore.ThreadWorker do
       {result, next_state} = execute_tool_call(acc_state, call)
       call_id = call["call_id"] || call["id"]
 
+      formatted = format_tool_result(result)
+
       broadcast(acc_state, :tool_completed, %{
         thread_id: acc_state.thread_id,
         call_id: call_id,
-        result: result
+        result: formatted
       })
 
       tool_result = %{
         "type" => "function_call_output",
         "call_id" => call_id,
-        "output" => format_tool_result(result)
+        "output" => formatted
       }
 
       {tool_result, next_state}
