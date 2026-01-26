@@ -1370,9 +1370,6 @@ defmodule EchsCore.ThreadWorker do
       "apply_patch" ->
         {Tools.ApplyPatch.apply(args["patch"], cwd: state.cwd), state}
 
-      name when is_binary(name) and String.starts_with?(name, "forum_") ->
-        {Tools.CodexForum.execute(name, args), state}
-
       "view_image" ->
         attach_image(state, args)
 
@@ -1393,6 +1390,13 @@ defmodule EchsCore.ThreadWorker do
 
       "kill_agent" ->
         kill_subagent(state, args)
+
+      name when is_binary(name) ->
+        if String.starts_with?(name, "forum_") do
+          {Tools.CodexForum.execute(name, args), state}
+        else
+          execute_custom_tool(state, name, args)
+        end
 
       _ ->
         execute_custom_tool(state, name, args)
@@ -1874,19 +1878,36 @@ defmodule EchsCore.ThreadWorker do
       tools
     else
       case name do
-        "shell" -> tools ++ [Tools.Shell.spec()]
-        "view_image" -> tools ++ [Tools.ViewImage.spec()]
-        "read_file" -> tools ++ [Tools.Files.read_file_spec()]
-        "list_dir" -> tools ++ [Tools.Files.list_dir_spec()]
-        "grep_files" -> tools ++ [Tools.Files.grep_files_spec()]
-        "apply_patch" -> tools ++ [Tools.ApplyPatch.spec()]
-        _ when String.starts_with?(name, "forum_") ->
-          case Tools.CodexForum.spec_by_name(name) do
-            nil -> tools
-            spec -> tools ++ [spec]
+        "shell" ->
+          tools ++ [Tools.Shell.spec()]
+
+        "view_image" ->
+          tools ++ [Tools.ViewImage.spec()]
+
+        "read_file" ->
+          tools ++ [Tools.Files.read_file_spec()]
+
+        "list_dir" ->
+          tools ++ [Tools.Files.list_dir_spec()]
+
+        "grep_files" ->
+          tools ++ [Tools.Files.grep_files_spec()]
+
+        "apply_patch" ->
+          tools ++ [Tools.ApplyPatch.spec()]
+
+        name when is_binary(name) ->
+          if String.starts_with?(name, "forum_") do
+            case Tools.CodexForum.spec_by_name(name) do
+              nil -> tools
+              spec -> tools ++ [spec]
+            end
+          else
+            tools
           end
 
-        _ -> tools
+        _ ->
+          tools
       end
     end
   end
@@ -1910,29 +1931,56 @@ defmodule EchsCore.ThreadWorker do
     extra =
       Enum.flat_map(names, fn name ->
         case name do
-          "shell" -> [Tools.Shell.spec()]
-          "view_image" -> [Tools.ViewImage.spec()]
+          "shell" ->
+            [Tools.Shell.spec()]
+
+          "view_image" ->
+            [Tools.ViewImage.spec()]
+
           # Already included
-          "local_shell" -> []
+          "local_shell" ->
+            []
+
           # Already included
-          "exec_command" -> []
+          "exec_command" ->
+            []
+
           # Already included
-          "write_stdin" -> []
-          "read_file" -> [Tools.Files.read_file_spec()]
-          "list_dir" -> [Tools.Files.list_dir_spec()]
-          "grep_files" -> [Tools.Files.grep_files_spec()]
-          "apply_patch" -> [Tools.ApplyPatch.spec()]
+          "write_stdin" ->
+            []
+
+          "read_file" ->
+            [Tools.Files.read_file_spec()]
+
+          "list_dir" ->
+            [Tools.Files.list_dir_spec()]
+
+          "grep_files" ->
+            [Tools.Files.grep_files_spec()]
+
+          "apply_patch" ->
+            [Tools.ApplyPatch.spec()]
+
           # Already included
-          "blackboard_write" -> []
+          "blackboard_write" ->
+            []
+
           # Already included
-          "blackboard_read" -> []
-          _ when is_binary(name) and String.starts_with?(name, "forum_") ->
-            case Tools.CodexForum.spec_by_name(name) do
-              nil -> []
-              spec -> [spec]
+          "blackboard_read" ->
+            []
+
+          name when is_binary(name) ->
+            if String.starts_with?(name, "forum_") do
+              case Tools.CodexForum.spec_by_name(name) do
+                nil -> []
+                spec -> [spec]
+              end
+            else
+              []
             end
 
-          _ -> []
+          _ ->
+            []
         end
       end)
 

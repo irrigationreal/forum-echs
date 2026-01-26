@@ -20,8 +20,11 @@ defmodule EchsServer.ThreadEventBuffer do
 
   defp ensure_started(thread_id) do
     case Registry.lookup(EchsServer.ThreadEventRegistry, thread_id) do
-      [{pid, _}] -> {:ok, pid}
-      [] -> DynamicSupervisor.start_child(EchsServer.ThreadEventSupervisor, {__MODULE__, thread_id})
+      [{pid, _}] ->
+        {:ok, pid}
+
+      [] ->
+        DynamicSupervisor.start_child(EchsServer.ThreadEventSupervisor, {__MODULE__, thread_id})
     end
   end
 

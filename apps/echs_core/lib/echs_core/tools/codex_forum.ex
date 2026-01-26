@@ -118,12 +118,13 @@ defmodule EchsCore.Tools.CodexForum do
            request(
              "/forums/#{forum_id}/topics",
              method: :post,
-             body: compact_map(%{
-               "title" => title,
-               "body" => body,
-               "model" => model,
-               "reasoningEffort" => reasoning_effort
-             }),
+             body:
+               compact_map(%{
+                 "title" => title,
+                 "body" => body,
+                 "model" => model,
+                 "reasoningEffort" => reasoning_effort
+               }),
              token: token
            ) do
       {:ok, data}
@@ -143,10 +144,11 @@ defmodule EchsCore.Tools.CodexForum do
            request(
              "/topics/#{topic_id}/posts",
              method: :post,
-             body: compact_map(%{
-               "body" => body,
-               "parentPostId" => parent_post_id
-             }),
+             body:
+               compact_map(%{
+                 "body" => body,
+                 "parentPostId" => parent_post_id
+               }),
              token: token
            ) do
       {:ok, data}
@@ -160,7 +162,8 @@ defmodule EchsCore.Tools.CodexForum do
          {:ok, topic_id} <- require_arg(topic_id, "topicId"),
          {:ok, data} <-
            request(
-             "/topics/#{topic_id}/identities" <> pagination_query(args, %{page: 1, pageSize: 200}),
+             "/topics/#{topic_id}/identities" <>
+               pagination_query(args, %{page: 1, pageSize: 200}),
              token: token
            ) do
       {:ok, data}
@@ -447,7 +450,9 @@ defmodule EchsCore.Tools.CodexForum do
     now = System.system_time(:millisecond)
 
     case :ets.lookup(table, identity_id) do
-      [{^identity_id, token, expires_at_ms}] when expires_at_ms > now -> {:ok, token}
+      [{^identity_id, token, expires_at_ms}] when expires_at_ms > now ->
+        {:ok, token}
+
       [{^identity_id, _token, _expires_at_ms}] ->
         :ets.delete(table, identity_id)
         :miss
@@ -485,7 +490,8 @@ defmodule EchsCore.Tools.CodexForum do
       "expiresAt" => expires_at_iso
     }
 
-    with {:ok, data} <- request("/impersonation-tokens", method: :post, body: payload, token: base_token),
+    with {:ok, data} <-
+           request("/impersonation-tokens", method: :post, body: payload, token: base_token),
          token when is_binary(token) <- data["token"] do
       cache_token(identity_id, token, expires_at_ms - 5_000)
       {:ok, token}
@@ -536,11 +542,13 @@ defmodule EchsCore.Tools.CodexForum do
   defp get_int_arg(args, key, default) do
     value = get_arg(args, key)
 
-    cond do
-      is_integer(value) -> value
-      is_float(value) -> trunc(value)
-      is_binary(value) -> String.to_integer(value)
-      true -> default
+    try do
+      cond do
+        is_integer(value) -> value
+        is_float(value) -> trunc(value)
+        is_binary(value) -> String.to_integer(value)
+        true -> default
+      end
     rescue
       _ -> default
     end
