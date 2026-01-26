@@ -63,7 +63,18 @@ defmodule EchsClaude do
         into: handler
       )
 
-    result = Req.request(request)
+    result =
+      case Req.request(request) do
+        {:ok, %{status: 200}} = ok ->
+          ok
+
+        {:ok, %{status: status, body: body}} ->
+          {:error, %{status: status, body: body}}
+
+        {:error, _} = error ->
+          error
+      end
+
     Agent.stop(state_agent)
     result
   end
