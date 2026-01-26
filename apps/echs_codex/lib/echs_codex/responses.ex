@@ -135,6 +135,22 @@ defmodule EchsCodex.Responses do
   end
 
   defp build_reasoning_payload(reasoning) do
+    summary_override =
+      System.get_env("ECHS_REASONING_SUMMARY")
+      |> to_string()
+      |> String.trim()
+      |> String.downcase()
+
+    normalized_summary =
+      case summary_override do
+        "" -> nil
+        "auto" -> "auto"
+        "none" -> "none"
+        "detailed" -> "detailed"
+        "short" -> "short"
+        _ -> nil
+      end
+
     case reasoning do
       nil ->
         %{}
@@ -143,7 +159,13 @@ defmodule EchsCodex.Responses do
         %{}
 
       value when is_binary(value) ->
-        summary = if value == "none", do: "none", else: "auto"
+        summary =
+          cond do
+            value == "none" -> "none"
+            normalized_summary -> normalized_summary
+            true -> "auto"
+          end
+
         %{"effort" => value, "summary" => summary}
 
       _ ->
