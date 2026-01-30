@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export TERM="${TERM:-xterm-256color}"
+
+if [[ "${TERM}" == "dumb" ]]; then
+  export TERM="xterm-256color"
+fi
+
+if [[ ! -t 0 || ! -t 1 ]]; then
+  cat <<'MSG'
+No interactive TTY detected. The TUI requires a real terminal.
+
+Try one of:
+  ssh -t <host> /root/projects/forum-echs/bin/echs-tui
+  docker exec -it <container> /root/projects/forum-echs/bin/echs-tui
+  kubectl exec -it <pod> -- /root/projects/forum-echs/bin/echs-tui
+MSG
+  exit 1
+fi
+cd "$ROOT_DIR"
+
+if [[ $# -gt 0 ]]; then
+  export ECHS_TUI_CWD="$1"
+  mix run --no-start -e 'EchsCli.Tui.main([System.get_env("ECHS_TUI_CWD")])'
+else
+  mix run --no-start -e 'EchsCli.Tui.main()'
+fi

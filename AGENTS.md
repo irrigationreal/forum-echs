@@ -16,6 +16,14 @@ mix format
 # Interactive CLI (uses Codex + tool loop)
 mix run -e 'EchsCli.main()'
 mix run -e 'EchsCli.main(["/path/to/workdir"])'
+
+# Ratatouille TUI
+mix run -e 'EchsCli.Tui.main()'
+mix run -e 'EchsCli.Tui.main(["/path/to/workdir"])'
+
+# Shortcut script
+./bin/echs-tui
+./bin/echs-tui /path/to/workdir
 ```
 
 ## What This Repo Is
@@ -123,7 +131,7 @@ Thread configuration can be hot-swapped via:
 
 The config map keys supported by the worker today:
 
-- `"cwd"`, `"model"`, `"reasoning"`, `"instructions"`, `"tools"`
+- `"cwd"`, `"model"`, `"reasoning"`, `"instructions"`, `"toolsets"`, `"tools"`
 
 Tools can be modified by name using `"+tool"` and `"-tool"` entries. Example:
 

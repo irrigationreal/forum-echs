@@ -1,8 +1,6 @@
 defmodule EchsServer.Conversations do
   @moduledoc false
 
-  require Logger
-
   alias EchsServer.ConversationEventBuffer
 
   @default_model "gpt-5.2-codex"
@@ -137,11 +135,24 @@ defmodule EchsServer.Conversations do
 
       items = maybe_redact_history(items, redactions?)
       total = length(items)
+      offset = normalize_offset(Keyword.get(opts, :offset, 0))
+      limit = normalize_limit(Keyword.get(opts, :limit, total), total)
+
+      items =
+        items
+        |> Enum.drop(offset)
+        |> Enum.take(limit)
 
       {:ok,
-       %{conversation_id: conversation_id, items: items, total: total, limit: total, offset: 0}}
+       %{conversation_id: conversation_id, items: items, total: total, limit: limit, offset: offset}}
     end
   end
+
+  defp normalize_offset(value) when is_integer(value) and value >= 0, do: value
+  defp normalize_offset(_), do: 0
+
+  defp normalize_limit(value, total) when is_integer(value) and value > 0, do: value
+  defp normalize_limit(_value, total), do: total
 
   defp ensure_conversation(conversation_id) do
     if store_enabled?() do
@@ -249,7 +260,7 @@ defmodule EchsServer.Conversations do
 
   defp load_history(thread_id, opts) do
     limit = Keyword.get(opts, :limit, 5_000)
-    offset = Keyword.get(opts, :offset, 0)
+    offset = normalize_offset(Keyword.get(opts, :offset, 0))
 
     case safe_get_history(thread_id, offset: offset, limit: limit) do
       {:ok, %{items: items}} -> {:ok, items}

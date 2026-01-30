@@ -24,7 +24,16 @@ config :echs_server,
   start_server: config_env() != :test
 
 config :echs_core,
-  max_concurrent_turns: 10
+  # Default to unlimited concurrency; deploy-time operators can still set a cap
+  # via `ECHS_MAX_CONCURRENT_TURNS` if needed.
+  max_concurrent_turns: :infinity,
+  shell_environment_policy: %{
+    inherit: :all,
+    ignore_default_excludes: true,
+    exclude: [],
+    include_only: [],
+    set: %{}
+  }
 
 # SQLite-backed persistence used by the daemon. In tests we use a single
 # in-memory connection for determinism.
@@ -41,3 +50,9 @@ config :echs_store, EchsStore.Repo,
   pool_size: if(config_env() == :test, do: 1, else: 5),
   journal_mode: :wal,
   synchronous: :normal
+
+# Allow erlexec to run under root in this environment.
+config :erlexec,
+  root: true,
+  user: "root",
+  limit_users: ["root"]

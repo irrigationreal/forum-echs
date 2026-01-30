@@ -27,7 +27,8 @@ defmodule EchsCore.MixProject do
       {:echs_codex, in_umbrella: true},
       {:echs_store, in_umbrella: true},
       {:jason, "~> 1.4"},
-      {:phoenix_pubsub, "~> 2.1"}
+      {:phoenix_pubsub, "~> 2.1"},
+      {:erlexec, "~> 2.0.8"}
     ]
   end
 end

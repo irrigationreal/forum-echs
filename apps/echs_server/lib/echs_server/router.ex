@@ -5,6 +5,7 @@ defmodule EchsServer.Router do
 
   import Plug.Conn
 
+  alias EchsServer.MessageContent
   alias EchsServer.{Conversations, JSON, Models}
   alias EchsStore.{Conversation, Message, Thread}
 
@@ -123,9 +124,11 @@ defmodule EchsServer.Router do
 
   get "/v1/conversations/:conversation_id/history" do
     conn = fetch_query_params(conn)
+    offset = parse_int(conn.query_params["offset"], 0)
+    limit = parse_int(conn.query_params["limit"], 5000)
     redact? = parse_bool(conn.query_params["redact"] || "1")
 
-    case Conversations.list_history(conversation_id, redact?: redact?) do
+    case Conversations.list_history(conversation_id, offset: offset, limit: limit, redact?: redact?) do
       {:ok, resp} ->
         JSON.send_json(conn, 200, resp)
 
@@ -175,32 +178,41 @@ defmodule EchsServer.Router do
   end
 
   post "/v1/conversations/:conversation_id/interrupt" do
-    with {:ok, thread_id} <- Conversations.get_active_thread(conversation_id),
-         :ok <- safe_interrupt(thread_id) do
-      JSON.send_json(conn, 200, %{ok: true})
-    else
-      {:error, :not_found} -> JSON.send_error(conn, 404, "conversation not found")
-      {:error, _} -> JSON.send_error(conn, 404, "thread not found")
+    case Conversations.get_active_thread(conversation_id) do
+      {:ok, thread_id} ->
+        case safe_interrupt(thread_id) do
+          :ok -> JSON.send_json(conn, 200, %{ok: true})
+          {:error, :not_found} -> JSON.send_error(conn, 404, "thread not found")
+        end
+
+      {:error, :not_found} ->
+        JSON.send_error(conn, 404, "conversation not found")
     end
   end
 
   post "/v1/conversations/:conversation_id/pause" do
-    with {:ok, thread_id} <- Conversations.get_active_thread(conversation_id),
-         :ok <- safe_pause(thread_id) do
-      JSON.send_json(conn, 200, %{ok: true})
-    else
-      {:error, :not_found} -> JSON.send_error(conn, 404, "conversation not found")
-      {:error, _} -> JSON.send_error(conn, 404, "thread not found")
+    case Conversations.get_active_thread(conversation_id) do
+      {:ok, thread_id} ->
+        case safe_pause(thread_id) do
+          :ok -> JSON.send_json(conn, 200, %{ok: true})
+          {:error, :not_found} -> JSON.send_error(conn, 404, "thread not found")
+        end
+
+      {:error, :not_found} ->
+        JSON.send_error(conn, 404, "conversation not found")
     end
   end
 
   post "/v1/conversations/:conversation_id/resume" do
-    with {:ok, thread_id} <- Conversations.get_active_thread(conversation_id),
-         :ok <- safe_resume(thread_id) do
-      JSON.send_json(conn, 200, %{ok: true})
-    else
-      {:error, :not_found} -> JSON.send_error(conn, 404, "conversation not found")
-      {:error, _} -> JSON.send_error(conn, 404, "thread not found")
+    case Conversations.get_active_thread(conversation_id) do
+      {:ok, thread_id} ->
+        case safe_resume(thread_id) do
+          :ok -> JSON.send_json(conn, 200, %{ok: true})
+          {:error, :not_found} -> JSON.send_error(conn, 404, "thread not found")
+        end
+
+      {:error, :not_found} ->
+        JSON.send_error(conn, 404, "conversation not found")
     end
   end
 
@@ -314,7 +326,7 @@ defmodule EchsServer.Router do
   get "/v1/threads/:thread_id/history" do
     conn = fetch_query_params(conn)
     offset = parse_int(conn.query_params["offset"], 0)
-    limit = parse_int(conn.query_params["limit"], 200)
+    limit = parse_int(conn.query_params["limit"], 5000)
     redact? = parse_bool(conn.query_params["redact"] || "1")
 
     case safe_get_history(thread_id, offset: offset, limit: limit) do
@@ -696,6 +708,9 @@ defmodule EchsServer.Router do
         is_list(params["content"]) ->
           params["content"]
 
+        is_map(params["content"]) ->
+          [params["content"]]
+
         is_binary(params["text"]) ->
           params["text"]
 
@@ -705,8 +720,13 @@ defmodule EchsServer.Router do
 
     case content do
       items when is_list(items) ->
-        {:ok,
-         Enum.map(items, fn item -> if is_map(item), do: stringify_keys(item), else: item end)}
+        items =
+          Enum.map(items, fn item -> if is_map(item), do: stringify_keys(item), else: item end)
+
+        case MessageContent.normalize(items) do
+          {:ok, normalized} -> {:ok, normalized}
+          {:error, reason} -> {:error, {:invalid_content, reason}}
+        end
 
       other ->
         {:ok, other}

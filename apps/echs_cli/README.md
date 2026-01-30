@@ -16,10 +16,31 @@ Optional working directory:
 mix run -e 'EchsCli.main(["/path/to/workdir"])'
 ```
 
+## TUI
+
+Ratatouille-powered terminal UI:
+
+```bash
+mix run -e 'EchsCli.Tui.main()'
+```
+
+Optional working directory:
+
+```bash
+mix run -e 'EchsCli.Tui.main(["/path/to/workdir"])'
+```
+
+Shortcut script from the umbrella root:
+
+```bash
+./bin/echs-tui
+./bin/echs-tui /path/to/workdir
+```
+
 ## Installation
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `echs_cli` to your list of dependencies in `mix.exs`:
+This package is not published to Hex yet. If you vendor it yourself, add
+`echs_cli` to your dependencies in `mix.exs`:
 
 ```elixir
 def deps do
@@ -29,6 +50,4 @@ def deps do
 end
 ```
 
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at <https://hexdocs.pm/echs_cli>.
+Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc).

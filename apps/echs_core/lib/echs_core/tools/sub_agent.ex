@@ -7,31 +7,25 @@ defmodule EchsCore.Tools.SubAgent do
     %{
       "type" => "function",
       "name" => "spawn_agent",
-      "description" => "Spawn a sub-agent to work on a task. Returns agent_id.",
+      "description" =>
+        "Spawn a sub-agent for a well-scoped task. Returns the agent id to use to communicate with this agent.",
+      "strict" => false,
       "parameters" => %{
         "type" => "object",
         "properties" => %{
-          "task" => %{
+          "message" => %{
             "type" => "string",
-            "description" => "The task for the sub-agent to work on"
+            "description" =>
+              "Initial task for the new agent. Include scope, constraints, and the expected output."
           },
-          "coordination" => %{
+          "agent_type" => %{
             "type" => "string",
-            "enum" => ["hierarchical", "blackboard", "peer"],
-            "description" => "Coordination mode (default: hierarchical)"
-          },
-          "tools" => %{
-            "type" => "array",
-            "items" => %{"type" => "string"},
-            "description" => "Tools to give the sub-agent (default: all)"
-          },
-          "reasoning" => %{
-            "type" => "string",
-            "enum" => ["low", "medium", "high", "xhigh"],
-            "description" => "Reasoning effort level (default: medium)"
+            "description" =>
+              "Optional agent type (default, explorer, worker). Use an explicit type when delegating."
           }
         },
-        "required" => ["task"]
+        "required" => ["message"],
+        "additionalProperties" => false
       }
     }
   end
@@ -39,25 +33,29 @@ defmodule EchsCore.Tools.SubAgent do
   def send_spec do
     %{
       "type" => "function",
-      "name" => "send_to_agent",
-      "description" => "Send a message to a sub-agent.",
+      "name" => "send_input",
+      "description" =>
+        "Send a message to an existing agent. Use interrupt=true to redirect work immediately.",
+      "strict" => false,
       "parameters" => %{
         "type" => "object",
         "properties" => %{
-          "agent_id" => %{
+          "id" => %{
             "type" => "string",
-            "description" => "The agent ID to send to"
+            "description" => "Agent id to message (from spawn_agent)."
           },
           "message" => %{
             "type" => "string",
-            "description" => "The message to send"
+            "description" => "Message to send to the agent."
           },
           "interrupt" => %{
             "type" => "boolean",
-            "description" => "If true, interrupt the agent's current work first"
+            "description" =>
+              "When true, stop the agent's current task and handle this immediately. When false (default), queue this message."
           }
         },
-        "required" => ["agent_id", "message"]
+        "required" => ["id", "message"],
+        "additionalProperties" => false
       }
     }
   end
@@ -65,27 +63,48 @@ defmodule EchsCore.Tools.SubAgent do
   def wait_spec do
     %{
       "type" => "function",
-      "name" => "wait_agents",
-      "description" => "Wait for sub-agents to complete. Returns their results.",
+      "name" => "wait",
+      "description" =>
+        "Wait for agents to reach a final status. Completed statuses may include the agent's final message. Returns empty status when timed out.",
+      "strict" => false,
       "parameters" => %{
         "type" => "object",
         "properties" => %{
-          "agent_ids" => %{
+          "ids" => %{
             "type" => "array",
             "items" => %{"type" => "string"},
-            "description" => "List of agent IDs to wait for"
-          },
-          "mode" => %{
-            "type" => "string",
-            "enum" => ["any", "all"],
-            "description" => "Wait for 'any' (first) or 'all' agents (default: all)"
+            "description" =>
+              "Agent ids to wait on. Pass multiple ids to wait for whichever finishes first."
           },
           "timeout_ms" => %{
-            "type" => "integer",
-            "description" => "Timeout in milliseconds (default: 600000 = 10 min)"
+            "type" => "number",
+            "description" =>
+              "Optional timeout in milliseconds. Defaults to 600000, min 10000, max 300000. Prefer longer waits (minutes) to avoid busy polling."
           }
         },
-        "required" => ["agent_ids"]
+        "required" => ["ids"],
+        "additionalProperties" => false
+      }
+    }
+  end
+
+  def close_spec do
+    %{
+      "type" => "function",
+      "name" => "close_agent",
+      "description" =>
+        "Close an agent when it is no longer needed and return its last known status.",
+      "strict" => false,
+      "parameters" => %{
+        "type" => "object",
+        "properties" => %{
+          "id" => %{
+            "type" => "string",
+            "description" => "Agent id to close (from spawn_agent)."
+          }
+        },
+        "required" => ["id"],
+        "additionalProperties" => false
       }
     }
   end
@@ -98,13 +117,8 @@ defmodule EchsCore.Tools.SubAgent do
       "parameters" => %{
         "type" => "object",
         "properties" => %{
-          "key" => %{
-            "type" => "string",
-            "description" => "The key to write"
-          },
-          "value" => %{
-            "description" => "The value to store (any JSON value)"
-          },
+          "key" => %{"type" => "string", "description" => "The key to write"},
+          "value" => %{"description" => "The value to store (any JSON value)"},
           "notify_parent" => %{
             "type" => "boolean",
             "description" => "If true, notify and optionally interrupt the parent agent"
@@ -127,30 +141,9 @@ defmodule EchsCore.Tools.SubAgent do
       "parameters" => %{
         "type" => "object",
         "properties" => %{
-          "key" => %{
-            "type" => "string",
-            "description" => "The key to read"
-          }
+          "key" => %{"type" => "string", "description" => "The key to read"}
         },
         "required" => ["key"]
-      }
-    }
-  end
-
-  def kill_spec do
-    %{
-      "type" => "function",
-      "name" => "kill_agent",
-      "description" => "Kill a sub-agent.",
-      "parameters" => %{
-        "type" => "object",
-        "properties" => %{
-          "agent_id" => %{
-            "type" => "string",
-            "description" => "The agent ID to kill"
-          }
-        },
-        "required" => ["agent_id"]
       }
     }
   end

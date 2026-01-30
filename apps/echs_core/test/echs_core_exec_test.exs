@@ -13,7 +13,7 @@ defmodule EchsCore.Tools.ExecTest do
     # Force an early return while the command is still running.
     {:ok, first} =
       Exec.exec_command(exec,
-        cmd: ~s(printf "a"; sleep 0.05; printf "b"; sleep 0.05; printf "c"),
+        cmd: ~s(printf "a"; sleep 0.3; printf "b"; sleep 0.3; printf "c"),
         shell: "/bin/bash",
         login: false,
         yield_time_ms: 10
@@ -27,7 +27,7 @@ defmodule EchsCore.Tools.ExecTest do
         flunk("expected a session id in output:\n#{first}")
 
     # Let the command finish and emit output while we are not polling.
-    Process.sleep(150)
+    Process.sleep(700)
 
     {:ok, second} =
       Exec.write_stdin(exec,

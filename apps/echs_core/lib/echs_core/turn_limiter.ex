@@ -3,12 +3,14 @@ defmodule EchsCore.TurnLimiter do
   Global concurrency limiter for turn execution.
 
   Keeps a global cap on active turns across all threads and queues waiters.
+  By default, concurrency is unlimited; set a cap via `ECHS_MAX_CONCURRENT_TURNS`
+  (or `:echs_core, :max_concurrent_turns`) if needed for resource control.
   """
 
   use GenServer
 
   @name __MODULE__
-  @default_limit 10
+  @default_limit :infinity
 
   @type slot_ref :: reference()
 
@@ -110,9 +112,23 @@ defmodule EchsCore.TurnLimiter do
         Application.get_env(:echs_core, :max_concurrent_turns, @default_limit)
 
       raw ->
-        case Integer.parse(raw) do
-          {value, _} when value > 0 -> value
-          _ -> Application.get_env(:echs_core, :max_concurrent_turns, @default_limit)
+        raw = raw |> to_string() |> String.trim() |> String.downcase()
+
+        case raw do
+          "infinity" ->
+            :infinity
+
+          "unlimited" ->
+            :infinity
+
+          "none" ->
+            :infinity
+
+          _ ->
+            case Integer.parse(raw) do
+              {value, _} when value > 0 -> value
+              _ -> Application.get_env(:echs_core, :max_concurrent_turns, @default_limit)
+            end
         end
     end
   end

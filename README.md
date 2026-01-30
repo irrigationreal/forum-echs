@@ -23,6 +23,7 @@ This repo is meant to be:
 - `echs_cli` — interactive CLI for local runs.
 - `echs_server` — HTTP daemon (REST + SSE) exposing a wire interface.
 - `echs_protocol` — protocol definitions (currently minimal).
+- `echs_store` — SQLite persistence for threads/messages/history.
 
 ## Quickstart (Local)
 
@@ -40,6 +41,14 @@ mix test
 # Run an interactive session (uses echs_core + echs_codex under the hood)
 mix run -e 'EchsCli.main()'
 mix run -e 'EchsCli.main(["/path/to/workdir"])'
+
+# Ratatouille TUI
+mix run -e 'EchsCli.Tui.main()'
+mix run -e 'EchsCli.Tui.main(["/path/to/workdir"])'
+
+# Shortcut script
+./bin/echs-tui
+./bin/echs-tui /path/to/workdir
 ```
 
 ## Running The Daemon (echs_server)
@@ -52,7 +61,15 @@ Environment variables:
 - `ECHS_PORT` (default: `4000`)
 - `ECHS_API_TOKEN` (optional) - if set, requires `Authorization: Bearer <token>`
 - `ECHS_UPLOAD_DIR` (default: `/tmp/echs_uploads`) - where `/v1/uploads` stores files
-- `ECHS_MAX_CONCURRENT_TURNS` (default: `10`) - global cap on concurrent turns
+- `ECHS_MAX_CONCURRENT_TURNS` (default: `infinity`) - global cap on concurrent turns
+- `ECHS_DB_PATH` (default: `tmp/echs.db`) - SQLite path used by `echs_store`
+- `ECHS_DB_POOL_SIZE` (default: `5`) - SQLite connection pool size
+- `ECHS_AUTO_MIGRATE` (default: `1`) - set to `0` to disable auto-migrations
+- `ECHS_TOOL_TIMEOUT_MS` (default: `120000`) - max tool execution time
+- `ECHS_TOOL_LOG` (default: `0`) - set to `1` to log tool calls/results
+- `CODEX_FORUM_TOKEN` / `CODEX_FORUM_MCP_TOKEN` - enable Codex Forum toolset
+- `CODEX_FORUM_API_BASE_URL` (default: `http://localhost:4310`)
+- `CODEX_FORUM_API_PREFIX` (default: empty)
 - `LOG_LEVEL` (default: `info`) - release runtime logger level (see `config/runtime.exs`)
 
 Run locally:
@@ -113,6 +130,12 @@ Notes:
 This API is intentionally close to the Responses item model ECHS uses
 internally.
 
+ECHS exposes two API surfaces:
+
+- `threads` (low-level) - direct control over a single thread worker.
+- `conversations` (high-level) - long-lived container that manages an active
+  thread and auto-compaction into new threads.
+
 ### Create a thread (session)
 
 ```bash
@@ -160,6 +183,8 @@ Supported config keys today:
 `toolsets` accepts a list of named bundles (e.g. `core`, `codex_forum`). When
 present, ECHS rebuilds the tool list from those bundles before applying any
 `tools` add/remove modifiers.
+
+`tools` accepts `+name`/`-name` modifiers as well as full tool spec maps.
 
 ### Send a message (async)
 
@@ -292,6 +317,39 @@ curl -s -X POST 'http://127.0.0.1:4000/v1/uploads?inline=1' \\
   -F file=@/path/to/image.png | jq -r .image_url
 ```
 
+### Conversations (high-level API)
+
+Conversations keep a long-lived session across multiple threads. When the
+context window is exceeded, the server compacts history into a new thread and
+marks a session break in history.
+
+Create a conversation:
+
+```bash
+curl -s -X POST http://127.0.0.1:4000/v1/conversations \\
+  -H 'content-type: application/json' \\
+  -d '{"model":"gpt-5.2-codex","reasoning":"medium"}'
+```
+
+Send a message:
+
+```bash
+curl -s -X POST http://127.0.0.1:4000/v1/conversations/<conversation_id>/messages \\
+  -H 'content-type: application/json' \\
+  -d '{"content":"Hello from conversations"}'
+```
+
+Stream events:
+
+```bash
+curl -N http://127.0.0.1:4000/v1/conversations/<conversation_id>/events
+```
+
+Fetch conversation history (paged):
+
+```bash
+curl -s 'http://127.0.0.1:4000/v1/conversations/<conversation_id>/history?offset=0&limit=200' | jq .
+```
 
 ## Usage (As a Library)
 
@@ -355,6 +413,12 @@ including:
 - Sub-agents: `spawn_agent`, `send_to_agent`, `wait_agents`, `kill_agent`
 - Coordination: `blackboard_write`, `blackboard_read`
 - Images: `view_image` (attach a local image path to context as an `input_image`)
+
+Toolsets:
+
+- `core` (default)
+- `shell`
+- `codex_forum` (requires `CODEX_FORUM_TOKEN` or `CODEX_FORUM_MCP_TOKEN`)
 
 ### Custom Tools
 

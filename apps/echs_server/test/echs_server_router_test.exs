@@ -6,6 +6,7 @@ defmodule EchsServer.RouterTest do
   alias EchsServer.Router
 
   setup do
+    {:ok, _} = Application.ensure_all_started(:echs_server)
     {:ok, _} = Application.ensure_all_started(:echs_core)
     {:ok, _} = Application.ensure_all_started(:echs_codex)
 
@@ -16,9 +17,11 @@ defmodule EchsServer.RouterTest do
       )
 
     System.put_env("ECHS_UPLOAD_DIR", tmp)
+    System.put_env("ECHS_AGENT_TICKS", "0")
 
     on_exit(fn ->
       System.delete_env("ECHS_UPLOAD_DIR")
+      System.delete_env("ECHS_AGENT_TICKS")
       File.rm_rf(tmp)
     end)
 

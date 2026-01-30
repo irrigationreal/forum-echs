@@ -21,7 +21,9 @@ defmodule Echs.MixProject do
 
   defp aliases do
     [
-      setup: ["deps.get"]
+      setup: ["deps.get"],
+      "deps.get": ["deps.get", "echs.fix_erlexec_docs"],
+      "deps.compile": ["echs.fix_erlexec_docs", "deps.compile"]
     ]
   end
 

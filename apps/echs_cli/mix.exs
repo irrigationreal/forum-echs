@@ -26,7 +26,8 @@ defmodule EchsCli.MixProject do
   defp deps do
     [
       {:echs_core, in_umbrella: true},
-      {:echs_codex, in_umbrella: true}
+      {:echs_codex, in_umbrella: true},
+      {:ratatouille, "~> 0.5.1"}
     ]
   end
 end
