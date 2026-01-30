@@ -38,11 +38,12 @@ defmodule EchsClaude do
     tools = Keyword.get(opts, :tools, [])
     on_event = Keyword.fetch!(opts, :on_event)
     max_tokens = Keyword.get(opts, :max_tokens, default_max_tokens())
+    tool_allowlist = Keyword.get(opts, :tool_allowlist, :default)
 
     config = load_config()
     model = resolve_model_alias(model_alias, config)
 
-    tools_payload = build_tools(tools)
+    tools_payload = build_tools(tools, tool_allowlist)
     {input, _injected?} = ensure_instructions_in_first_user_message(input, instructions)
     messages = build_messages(input)
 
@@ -403,14 +404,16 @@ defmodule EchsClaude do
     |> Enum.reverse()
   end
 
-  defp build_tools(tools) when is_list(tools) do
+  defp build_tools(tools, allowlist) when is_list(tools) do
+    allowlist = resolve_tool_allowlist(allowlist)
+
     filtered =
       tools
       |> Enum.filter(fn tool ->
         (tool["type"] == "function" or tool["type"] == nil) and
           is_binary(tool["name"]) and String.trim(tool["name"]) != ""
       end)
-      |> filter_claude_tools()
+      |> filter_claude_tools(allowlist)
 
     case claude_tool_mode() do
       :direct ->
@@ -427,7 +430,7 @@ defmodule EchsClaude do
     end
   end
 
-  defp build_tools(_), do: []
+  defp build_tools(_, _), do: []
 
   defp build_router_tool([]), do: []
 
@@ -586,8 +589,8 @@ defmodule EchsClaude do
     end
   end
 
-  defp filter_claude_tools(tools) when is_list(tools) do
-    case claude_tool_allowlist() do
+  defp filter_claude_tools(tools, allowlist) when is_list(tools) do
+    case allowlist do
       :all ->
         tools
 
@@ -599,7 +602,12 @@ defmodule EchsClaude do
     end
   end
 
-  defp filter_claude_tools(_), do: []
+  defp filter_claude_tools(_tools, _allowlist), do: []
+
+  defp resolve_tool_allowlist(:default), do: claude_tool_allowlist()
+  defp resolve_tool_allowlist(:all), do: :all
+  defp resolve_tool_allowlist(allowlist) when is_list(allowlist), do: allowlist
+  defp resolve_tool_allowlist(_), do: claude_tool_allowlist()
 
   defp claude_tool_allowlist do
     case System.get_env("ECHS_CLAUDE_TOOL_ALLOWLIST") do

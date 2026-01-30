@@ -55,4 +55,27 @@ defmodule EchsCore.ThreadWorkerToolTest do
     assert Enum.any?(state.tools, fn tool -> (tool["name"] || tool[:name]) == "custom_tool" end)
     assert Map.has_key?(state.tool_handlers, "custom_tool")
   end
+
+  test "model switch refreshes core tools while preserving custom tools" do
+    {:ok, thread_id} = ThreadWorker.create()
+
+    spec = %{
+      "type" => "function",
+      "name" => "custom_tool_refresh",
+      "description" => "Custom test tool",
+      "parameters" => %{"type" => "object"}
+    }
+
+    handler = fn _args, _ctx -> {:ok, "done"} end
+
+    assert :ok == ThreadWorker.add_tool(thread_id, spec, handler)
+    assert :ok == ThreadWorker.configure(thread_id, %{"model" => "opus"})
+
+    state = ThreadWorker.get_state(thread_id)
+    tool_names = Enum.map(state.tools, fn tool -> tool["name"] || tool[:name] end)
+
+    assert "exec_command" in tool_names
+    assert "write_stdin" in tool_names
+    assert "custom_tool_refresh" in tool_names
+  end
 end

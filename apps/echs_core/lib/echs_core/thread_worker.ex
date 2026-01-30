@@ -7,14 +7,16 @@ defmodule EchsCore.ThreadWorker do
   use GenServer
   require Logger
 
-  alias EchsCore.{Tools, Blackboard}
+  alias EchsCore.{Tools, Blackboard, HistorySanitizer, ModelInfo}
+
+  @max_subagents 20
 
   @default_system_prompt """
   You are an autonomous coding agent with full system access. No approvals, no restrictions, no hand-holding.
 
   ## Capabilities
 
-  - **Shell**: Run any command via `exec_command` (session-based, port-backed stdio) or `local_shell`
+  - **Shell**: Run commands via `exec_command`/`write_stdin` (session-based stdio) or `shell` (one-shot)
   - **Files**: Read, write, patch, grep - full filesystem access
   - **Sub-agents**: Spawn parallel workers, coordinate via blackboard, divide and conquer
   - **Research**: Web searches, file exploration, code analysis - do what you need to understand the problem
@@ -26,6 +28,7 @@ defmodule EchsCore.ThreadWorker do
   **Depth over breadth.** When researching or debugging, go deep. Read the actual code. Trace the actual execution. Don't guess - verify. If you're unsure, investigate until you're certain.
 
   **Parallelism over sequence.** When tasks can be parallelized, spawn sub-agents. A 3-agent swarm finishing in 10 seconds beats a single agent taking 30. Use `spawn_agent` aggressively.
+  Default pattern: use sub-agents for investigation and keep writes/patches serialized in the parent thread.
 
   **Persistence over surrender.** When something fails, try another approach. Check error messages, read logs, inspect state. The answer exists - find it. Only yield back to the user when genuinely stuck or when the task is complete.
 
@@ -381,16 +384,18 @@ defmodule EchsCore.ThreadWorker do
     # parent thread should only handle notifications coming from its children).
     :ok = Phoenix.PubSub.subscribe(EchsCore.PubSub, "blackboard")
 
+    model = Keyword.get(opts, :model, "gpt-5.2-codex")
+
     state = %__MODULE__{
       thread_id: thread_id,
       parent_thread_id: parent_thread_id,
       created_at_ms: created_at_ms,
       last_activity_at_ms: last_activity_at_ms,
-      model: Keyword.get(opts, :model, "gpt-5.2-codex"),
+      model: model,
       reasoning: Keyword.get(opts, :reasoning, "medium"),
       cwd: cwd,
       instructions: build_instructions(Keyword.get(opts, :instructions), cwd),
-      tools: Keyword.get(opts, :tools, default_tools()),
+      tools: Keyword.get(opts, :tools, default_tools(model)),
       history_items: history_items,
       status: :idle,
       current_message_id: nil,
@@ -899,6 +904,7 @@ defmodule EchsCore.ThreadWorker do
   end
 
   defp do_start_stream(state) do
+    state = maybe_repair_missing_tool_outputs(state)
     stream_ref = make_ref()
     parent = self()
 
@@ -931,16 +937,7 @@ defmodule EchsCore.ThreadWorker do
           maybe_abort_after_event(event)
         end
 
-        api_input =
-          Enum.filter(state.history_items, fn item ->
-            item["type"] in [
-              "message",
-              "function_call",
-              "local_shell_call",
-              "function_call_output"
-            ]
-          end)
-          |> expand_uploads_for_api()
+        {api_input, api_tools, tool_allowlist} = prepare_api_request(state)
 
         result =
           if claude_model?(state.model) do
@@ -948,7 +945,8 @@ defmodule EchsCore.ThreadWorker do
               model: state.model,
               instructions: state.instructions,
               input: api_input,
-              tools: state.tools,
+              tools: api_tools,
+              tool_allowlist: tool_allowlist,
               reasoning: state.reasoning,
               on_event: on_event
             )
@@ -957,8 +955,9 @@ defmodule EchsCore.ThreadWorker do
               model: state.model,
               instructions: state.instructions,
               input: api_input,
-              tools: state.tools,
+              tools: api_tools,
               reasoning: state.reasoning,
+              req_opts: codex_req_opts(state),
               on_event: on_event
             )
           end
@@ -972,6 +971,220 @@ defmodule EchsCore.ThreadWorker do
       end
 
     send(parent, {:stream_complete, stream_ref, result, collected_items})
+  end
+
+  defp drop_unsupported_api_tools(tools) when is_list(tools) do
+    Enum.reject(tools, fn tool -> tool_key(tool) == "local_shell" end)
+  end
+
+  defp drop_unsupported_api_tools(other), do: other
+
+  defp maybe_repair_missing_tool_outputs(state) do
+    repair_items = HistorySanitizer.repair_output_items(state.history_items)
+
+    case repair_items do
+      [] ->
+        state
+
+      items ->
+        Logger.warning(
+          "Repairing missing tool outputs thread_id=#{state.thread_id} missing=#{length(items)}"
+        )
+
+        append_history_items(state, items)
+    end
+  end
+
+  defp prepare_api_request(state) do
+    api_input =
+      state.history_items
+      |> sanitize_api_history()
+      |> maybe_strip_claude_instructions(state.model)
+      |> expand_uploads_for_api()
+
+    api_tools =
+      state.tools
+      |> drop_unsupported_api_tools()
+      |> ensure_history_tool_specs(api_input)
+      |> uniq_tools()
+
+    tool_allowlist =
+      api_tools
+      |> Enum.map(&tool_key/1)
+      |> Enum.filter(&is_binary/1)
+      |> Enum.uniq()
+
+    {api_input, api_tools, tool_allowlist}
+  end
+
+  defp sanitize_api_history(items) when is_list(items) do
+    items
+    |> Enum.filter(fn item ->
+      item["type"] in ["message", "function_call", "function_call_output"]
+    end)
+    |> drop_orphan_function_call_outputs()
+    |> drop_orphan_function_calls()
+  end
+
+  defp sanitize_api_history(other), do: other
+
+  defp maybe_strip_claude_instructions(items, model) do
+    if claude_model?(model) do
+      items
+    else
+      strip_claude_instructions(items)
+    end
+  end
+
+  defp strip_claude_instructions(items) when is_list(items) do
+    Enum.map(items, &strip_claude_instructions_item/1)
+  end
+
+  defp strip_claude_instructions(other), do: other
+
+  defp strip_claude_instructions_item(
+         %{"type" => "message", "role" => "user", "content" => content} = item
+       ) do
+    %{item | "content" => strip_claude_instructions_content(content)}
+  end
+
+  defp strip_claude_instructions_item(item), do: item
+
+  defp strip_claude_instructions_content(content) when is_binary(content) do
+    strip_claude_marker_text(content)
+  end
+
+  defp strip_claude_instructions_content(content) when is_list(content) do
+    content
+    |> Enum.map(&strip_claude_instructions_content_item/1)
+    |> Enum.reject(&empty_content_item?/1)
+  end
+
+  defp strip_claude_instructions_content(other), do: other
+
+  defp strip_claude_instructions_content_item(%{"text" => text} = item) when is_binary(text) do
+    updated = strip_claude_marker_text(text)
+
+    if updated == text do
+      item
+    else
+      Map.put(item, "text", updated)
+    end
+  end
+
+  defp strip_claude_instructions_content_item(item), do: item
+
+  defp empty_content_item?(%{"text" => text}) when is_binary(text) do
+    String.trim(text) == ""
+  end
+
+  defp empty_content_item?(_), do: false
+
+  defp strip_claude_marker_text(text) when is_binary(text) do
+    Regex.replace(
+      ~r/\A<CLAUDE_INSTRUCTIONS>.*?<\/CLAUDE_INSTRUCTIONS>\s*/s,
+      text,
+      ""
+    )
+  end
+
+  defp strip_claude_marker_text(other), do: other
+
+  defp ensure_history_tool_specs(tools, items) when is_list(items) do
+    used_tools = tool_names_in_history(items)
+
+    existing =
+      tools
+      |> Enum.map(&tool_key/1)
+      |> Enum.filter(&is_binary/1)
+      |> MapSet.new()
+
+    missing = MapSet.difference(used_tools, existing)
+
+    extras =
+      missing
+      |> Enum.map(&tool_spec_for_name/1)
+      |> Enum.reject(&is_nil/1)
+
+    tools ++ extras
+  end
+
+  defp ensure_history_tool_specs(tools, _items), do: tools
+
+  defp tool_names_in_history(items) do
+    items
+    |> Enum.reduce(MapSet.new(), fn
+      %{"type" => "function_call", "name" => name}, acc when is_binary(name) and name != "" ->
+        MapSet.put(acc, name)
+
+      _item, acc ->
+        acc
+    end)
+  end
+
+  defp tool_spec_for_name(name) when is_binary(name) do
+    case name do
+      "shell_command" -> Tools.Shell.shell_command_spec()
+      "shell" -> Tools.Shell.spec()
+      "exec_command" -> Tools.Exec.exec_command_spec()
+      "write_stdin" -> Tools.Exec.write_stdin_spec()
+      "read_file" -> Tools.Files.read_file_spec()
+      "list_dir" -> Tools.Files.list_dir_spec()
+      "grep_files" -> Tools.Files.grep_files_spec()
+      "apply_patch" -> Tools.ApplyPatch.spec()
+      "view_image" -> Tools.ViewImage.spec()
+      "spawn_agent" -> Tools.SubAgent.spawn_spec()
+      "send_input" -> Tools.SubAgent.send_spec()
+      "wait" -> Tools.SubAgent.wait_spec()
+      "close_agent" -> Tools.SubAgent.close_spec()
+      "blackboard_write" -> Tools.SubAgent.blackboard_write_spec()
+      "blackboard_read" -> Tools.SubAgent.blackboard_read_spec()
+      "send_to_agent" -> alias_tool_spec(Tools.SubAgent.send_spec(), name)
+      "wait_agents" -> alias_tool_spec(Tools.SubAgent.wait_spec(), name)
+      "kill_agent" -> alias_tool_spec(Tools.SubAgent.close_spec(), name)
+      _ -> Tools.CodexForum.spec_by_name(name)
+    end
+  end
+
+  defp tool_spec_for_name(_), do: nil
+
+  defp alias_tool_spec(spec, name) when is_map(spec) and is_binary(name) do
+    Map.put(spec, "name", name)
+  end
+
+  defp drop_orphan_function_call_outputs(items) when is_list(items) do
+    call_ids =
+      items
+      |> Enum.filter(&(&1["type"] == "function_call"))
+      |> Enum.map(&(&1["call_id"] || &1["id"] || ""))
+      |> Enum.filter(&is_binary/1)
+      |> MapSet.new()
+
+    Enum.filter(items, fn
+      %{"type" => "function_call_output", "call_id" => call_id} when is_binary(call_id) ->
+        MapSet.member?(call_ids, call_id)
+
+      _ ->
+        true
+    end)
+  end
+
+  defp drop_orphan_function_calls(items) when is_list(items) do
+    output_ids =
+      items
+      |> Enum.filter(&(&1["type"] == "function_call_output"))
+      |> Enum.map(&(&1["call_id"] || ""))
+      |> Enum.filter(&is_binary/1)
+      |> MapSet.new()
+
+    Enum.filter(items, fn
+      %{"type" => "function_call"} = item ->
+        call_id = item["call_id"] || item["id"]
+        is_binary(call_id) and call_id != "" and MapSet.member?(output_ids, call_id)
+
+      _ ->
+        true
+    end)
   end
 
   defp poll_stream_control do
@@ -1346,6 +1559,7 @@ defmodule EchsCore.ThreadWorker do
     end
   end
 
+  defp format_tool_result({:error, err}) when is_binary(err), do: err
   defp format_tool_result({:error, err}), do: "Error: #{inspect(err)}"
   defp format_tool_result(:ok), do: "OK"
   defp format_tool_result(other), do: inspect(other)
@@ -1367,6 +1581,8 @@ defmodule EchsCore.ThreadWorker do
   end
 
   defp handle_sse_event(state, event, items_agent) do
+    maybe_log_sse_event(state, event)
+
     case event["type"] do
       "response.output_item.added" ->
         broadcast(state, :item_started, %{thread_id: state.thread_id, item: event["item"]})
@@ -1411,6 +1627,73 @@ defmodule EchsCore.ThreadWorker do
         :ok
     end
   end
+
+  defp codex_req_opts(_state) do
+    case codex_receive_timeout_ms() do
+      nil -> []
+      timeout_ms -> [receive_timeout: timeout_ms]
+    end
+  end
+
+  defp codex_receive_timeout_ms do
+    case System.get_env("ECHS_CODEX_RECEIVE_TIMEOUT_MS") do
+      nil -> nil
+      value ->
+        case Integer.parse(value) do
+          {int, _} when int > 0 -> int
+          _ -> nil
+        end
+    end
+  end
+
+  defp maybe_log_sse_event(_state, %{"type" => type} = event) when is_binary(type) do
+    if System.get_env("ECHS_SSE_LOG") in ["1", "true", "yes", "on"] do
+      summary =
+        case type do
+          "response.output_text.delta" -> truncate_event_text(event["delta"])
+          "response.reasoning_summary.delta" -> truncate_event_text(event["delta"])
+          "response.output_item.added" -> summarize_item(event["item"])
+          "response.output_item.done" -> summarize_item(event["item"])
+          _ -> ""
+        end
+
+      Logger.info("SSE #{type} #{summary}")
+    end
+  end
+
+  defp maybe_log_sse_event(_state, _event), do: :ok
+
+  defp summarize_item(%{"type" => type} = item) when is_binary(type) do
+    case type do
+      "function_call" ->
+        name = item["name"] || ""
+        "tool=#{name}"
+
+      "function_call_output" ->
+        "tool_output"
+
+      "message" ->
+        role = item["role"] || ""
+        text = truncate_event_text(extract_message_text(item))
+        "message role=#{role} text=#{text}"
+
+      _ ->
+        "item=#{type}"
+    end
+  end
+
+  defp summarize_item(_), do: ""
+
+  defp truncate_event_text(text) when is_binary(text) do
+    trimmed = String.trim(text)
+    if String.length(trimmed) > 120 do
+      String.slice(trimmed, 0, 120) <> "..."
+    else
+      trimmed
+    end
+  end
+
+  defp truncate_event_text(_), do: ""
 
   defp maybe_send_usage(parent, %{"type" => "response.completed"} = event) do
     case extract_usage(event) do
@@ -1581,6 +1864,64 @@ defmodule EchsCore.ThreadWorker do
   defp extract_text_content(%{"content" => content}), do: extract_text_content(content)
   defp extract_text_content(_), do: ""
 
+  defp tool_timeout_ms do
+    case System.get_env("ECHS_TOOL_TIMEOUT_MS") do
+      nil -> 120_000
+      value ->
+        case Integer.parse(value) do
+          {int, _} when int > 0 -> int
+          _ -> 120_000
+        end
+    end
+  end
+
+  defp log_tool_event(:start, item) do
+    if tool_log_enabled?() do
+      Logger.info("tool.start #{summarize_tool_item(item)}")
+    end
+  end
+
+  defp log_tool_event(_stage, _item), do: :ok
+
+  defp log_tool_event(:done, item, {result, _state_after}, duration_ms) do
+    if tool_log_enabled?() do
+      Logger.info(
+        "tool.done #{summarize_tool_item(item)} duration_ms=#{duration_ms} result=#{summarize_tool_result(result)}"
+      )
+    end
+  end
+
+  defp log_tool_event(_stage, _item, _result, _duration_ms), do: :ok
+
+  defp tool_log_enabled? do
+    System.get_env("ECHS_TOOL_LOG") in ["1", "true", "yes", "on"]
+  end
+
+  defp summarize_tool_item(%{"type" => "function_call"} = item) do
+    name = item["name"] || "unknown"
+    call_id = item["call_id"] || item["id"] || ""
+    "name=#{name} call_id=#{call_id}"
+  end
+
+  defp summarize_tool_item(%{"type" => "local_shell_call"} = item) do
+    call_id = item["call_id"] || item["id"] || ""
+    "local_shell call_id=#{call_id}"
+  end
+
+  defp summarize_tool_item(item) when is_map(item) do
+    "type=#{item["type"] || "unknown"}"
+  end
+
+  defp summarize_tool_item(_), do: "unknown"
+
+  defp summarize_tool_result({:error, reason}) when is_binary(reason) do
+    "error=#{truncate_event_text(reason)}"
+  end
+
+  defp summarize_tool_result({:error, reason}), do: "error=#{inspect(reason)}"
+  defp summarize_tool_result(result) when is_binary(result), do: truncate_event_text(result)
+  defp summarize_tool_result(result), do: truncate_event_text(inspect(result))
+
   defp maybe_broadcast_reasoning(state, %{"type" => "reasoning"} = item) do
     summary = reasoning_summary_text(item)
 
@@ -1603,37 +1944,42 @@ defmodule EchsCore.ThreadWorker do
   defp reasoning_summary_text(_), do: ""
 
   defp execute_tool_call(state, item) do
-    case item["type"] do
-      "local_shell_call" ->
-        # Execute shell command - the API sends ["bash", "-lc", "actual_command"]
-        command = get_in(item, ["action", "command"]) || []
-        cwd = get_in(item, ["action", "working_directory"]) || state.cwd
-        timeout_ms = get_in(item, ["action", "timeout_ms"]) || 120_000
+    start_ms = System.monotonic_time(:millisecond)
+    log_tool_event(:start, item)
 
-        # The command is already formatted as [executable, ...args]
-        # Usually ["bash", "-lc", "the actual command"]
-        case command do
-          [cmd | args] ->
-            {execute_shell_direct(cmd, args, cwd, timeout_ms), state}
+    result =
+      case item["type"] do
+        "local_shell_call" ->
+          command = get_in(item, ["action", "command"]) || []
+          cwd = get_in(item, ["action", "working_directory"]) || state.cwd
+          timeout_ms = get_in(item, ["action", "timeout_ms"]) || tool_timeout_ms()
 
-          [] ->
-            {"Error: empty command", state}
-        end
+          case command do
+            [_ | _] ->
+              {Tools.Shell.execute_array(command, cwd: cwd, timeout_ms: timeout_ms), state}
 
-      "function_call" ->
-        name = item["name"]
+            [] ->
+              {{:error, "unsupported payload for shell handler: local_shell"}, state}
+          end
 
-        case decode_tool_args(item["arguments"]) do
-          {:ok, args} ->
-            execute_named_tool(state, name, args)
+        "function_call" ->
+          name = item["name"]
 
-          {:error, reason} ->
-            {{:error, reason}, state}
-        end
+          case decode_tool_args(item["arguments"]) do
+            {:ok, args} ->
+              execute_named_tool(state, name, args)
 
-      _ ->
-        {{:error, "Unknown item type: #{item["type"]}"}, state}
-    end
+            {:error, reason} ->
+              {{:error, reason}, state}
+          end
+
+        _ ->
+          {{:error, "Unknown item type: #{item["type"]}"}, state}
+      end
+
+    duration_ms = System.monotonic_time(:millisecond) - start_ms
+    log_tool_event(:done, item, result, duration_ms)
+    result
   end
 
   defp decode_tool_args(nil), do: {:ok, %{}}
@@ -1652,8 +1998,52 @@ defmodule EchsCore.ThreadWorker do
     case name do
       "shell" ->
         cwd = args["workdir"] || state.cwd
-        timeout_ms = args["timeout_ms"] || 120_000
-        {Tools.Shell.execute(args["command"], cwd: cwd, timeout_ms: timeout_ms), state}
+        timeout_ms = args["timeout_ms"] || tool_timeout_ms()
+        command = args["command"] || []
+
+        case maybe_intercept_apply_patch(state, "shell", command, cwd) do
+          :not_apply_patch ->
+            truncation_policy = ModelInfo.truncation_policy(state.model)
+
+            {Tools.Shell.execute_array(command,
+               cwd: cwd,
+               timeout_ms: timeout_ms,
+               truncation_policy: truncation_policy
+             ), state}
+
+          {:error, reason} ->
+            {{:error, reason}, state}
+
+          other ->
+            {other, state}
+        end
+
+      "shell_command" ->
+        cwd = args["workdir"] || state.cwd
+        timeout_ms = args["timeout_ms"] || tool_timeout_ms()
+        login = Map.get(args, "login", true)
+
+        command = args["command"] || ""
+        shell = System.get_env("SHELL") || "/bin/bash"
+        argv = Tools.Exec.command_args(shell, command, login)
+
+        case maybe_intercept_apply_patch(state, "shell_command", argv, cwd) do
+          :not_apply_patch ->
+            truncation_policy = ModelInfo.truncation_policy(state.model)
+
+            {Tools.Shell.execute_command(command,
+               cwd: cwd,
+               timeout_ms: timeout_ms,
+               login: login,
+               truncation_policy: truncation_policy
+             ), state}
+
+          {:error, reason} ->
+            {{:error, reason}, state}
+
+          other ->
+            {other, state}
+        end
 
       "exec_command" ->
         {exec_command(state, args), state}
@@ -1668,10 +2058,11 @@ defmodule EchsCore.ThreadWorker do
         {Tools.Files.list_dir(args["dir_path"], args), state}
 
       "grep_files" ->
-        {Tools.Files.grep_files(args["pattern"], args["paths"], args), state}
+        {Tools.Files.grep_files(args["pattern"], Map.put(args, "cwd", state.cwd)), state}
 
       "apply_patch" ->
-        {Tools.ApplyPatch.apply(args["patch"], cwd: state.cwd), state}
+        input = args["input"] || args["patch"] || ""
+        {Tools.ApplyPatch.apply(input, cwd: state.cwd), state}
 
       "view_image" ->
         attach_image(state, args)
@@ -1679,10 +2070,10 @@ defmodule EchsCore.ThreadWorker do
       "spawn_agent" ->
         spawn_subagent(state, args)
 
-      "send_to_agent" ->
+      "send_input" ->
         {send_to_subagent(state, args), state}
 
-      "wait_agents" ->
+      "wait" ->
         {wait_for_agents(state, args), state}
 
       "blackboard_write" ->
@@ -1691,7 +2082,7 @@ defmodule EchsCore.ThreadWorker do
       "blackboard_read" ->
         {blackboard_read(state, args), state}
 
-      "kill_agent" ->
+      "close_agent" ->
         kill_subagent(state, args)
 
       name when is_binary(name) ->
@@ -1711,72 +2102,73 @@ defmodule EchsCore.ThreadWorker do
 
     case Tools.ViewImage.build_message_item(path, cwd: state.cwd) do
       {:ok, message_item} ->
-        {"attached local image", append_history_items(state, [message_item])}
+        {"attached local image path", append_history_items(state, [message_item])}
 
-      {:error, {:too_large, size, max_bytes}} ->
-        msg = "image too large (#{size} bytes > #{max_bytes} bytes): #{path}"
-        {{:error, msg}, state}
-
-      {:error, {:not_a_file, type}} ->
-        msg = "image path is not a file (#{inspect(type)}): #{path}"
-        {{:error, msg}, state}
+      {:error, reason} when is_binary(reason) ->
+        {{:error, reason}, state}
 
       {:error, reason} ->
-        msg = "unable to attach image #{path}: #{inspect(reason)}"
-        {{:error, msg}, state}
+        {{:error, "unable to attach image: #{inspect(reason)}"}, state}
     end
   end
 
   defp spawn_subagent(state, args) do
-    agent_id = generate_id()
+    if map_size(state.children) >= @max_subagents do
+      {{:error, %{error: "max_subagents_reached", max_subagents: @max_subagents}}, state}
+    else
+      agent_id = generate_id()
+      task = args["message"] || args["task"] || ""
 
-    # Validate reasoning level - only these are valid for Codex
-    reasoning =
-      case args["reasoning"] do
-        level when level in ["low", "medium", "high", "xhigh"] -> level
-        "minimal" -> "low"
-        "none" -> "low"
-        _ -> state.reasoning
+      # Validate reasoning level - only these are valid for Codex
+      reasoning =
+        case args["reasoning"] do
+          level when level in ["low", "medium", "high", "xhigh"] -> level
+          "minimal" -> "low"
+          "none" -> "low"
+          _ -> state.reasoning
+        end
+
+      opts = [
+        thread_id: agent_id,
+        parent_thread_id: state.thread_id,
+        cwd: state.cwd,
+        model: state.model,
+        reasoning: reasoning,
+        tools: filter_tools(args["tools"]),
+        coordination_mode: parse_coordination(args["coordination"])
+      ]
+
+      case create(opts) do
+        {:ok, ^agent_id} ->
+          # Run the agent asynchronously; use `wait_agents` to join later.
+          _ =
+            Task.Supervisor.start_child(EchsCore.TaskSupervisor, fn ->
+              _ = send_message(agent_id, task)
+              :ok
+            end)
+
+          broadcast(state, :subagent_spawned, %{
+            thread_id: state.thread_id,
+            agent_id: agent_id,
+            task: task
+          })
+
+          child_pid = lookup_thread_pid(agent_id)
+          monitor_ref = if is_pid(child_pid), do: Process.monitor(child_pid), else: nil
+
+          children =
+            Map.put(state.children, agent_id, %{pid: child_pid, monitor_ref: monitor_ref})
+
+          {{:ok, %{agent_id: agent_id}}, %{state | children: children}}
+
+        error ->
+          {error, state}
       end
-
-    opts = [
-      thread_id: agent_id,
-      parent_thread_id: state.thread_id,
-      cwd: state.cwd,
-      model: state.model,
-      reasoning: reasoning,
-      tools: filter_tools(args["tools"]),
-      coordination_mode: parse_coordination(args["coordination"])
-    ]
-
-    case create(opts) do
-      {:ok, ^agent_id} ->
-        # Run the agent asynchronously; use `wait_agents` to join later.
-        _ =
-          Task.Supervisor.start_child(EchsCore.TaskSupervisor, fn ->
-            _ = send_message(agent_id, args["task"])
-            :ok
-          end)
-
-        broadcast(state, :subagent_spawned, %{
-          thread_id: state.thread_id,
-          agent_id: agent_id,
-          task: args["task"]
-        })
-
-        child_pid = lookup_thread_pid(agent_id)
-        monitor_ref = if is_pid(child_pid), do: Process.monitor(child_pid), else: nil
-        children = Map.put(state.children, agent_id, %{pid: child_pid, monitor_ref: monitor_ref})
-
-        {{:ok, %{agent_id: agent_id}}, %{state | children: children}}
-
-      error ->
-        {error, state}
     end
   end
 
   defp send_to_subagent(_state, args) do
-    agent_id = args["agent_id"]
+    agent_id = args["id"] || args["agent_id"]
     message = args["message"]
 
     if args["interrupt"] do
@@ -1850,9 +2242,12 @@ defmodule EchsCore.ThreadWorker do
   end
 
   defp wait_for_agents(_state, args) do
-    agent_ids = args["agent_ids"]
-    mode = args["mode"] || "all"
-    timeout = args["timeout_ms"] || 600_000
+    agent_ids = args["ids"] || args["agent_ids"] || []
+    mode = args["mode"] || "any"
+    timeout =
+      args["timeout_ms"]
+      |> default_wait_timeout()
+      |> clamp_wait_timeout()
 
     start_time = System.monotonic_time(:millisecond)
     results = %{}
@@ -1899,17 +2294,26 @@ defmodule EchsCore.ThreadWorker do
         end)
 
       case mode do
-        "any" when completed != [] ->
-          {:ok, %{results: new_results, timed_out: false, remaining: still_running}}
-
         "all" when still_running == [] ->
           {:ok, %{results: new_results, timed_out: false}}
+
+        "any" when completed != [] ->
+          {:ok, %{results: new_results, timed_out: false, remaining: still_running}}
 
         _ ->
           Process.sleep(100)
           wait_loop(still_running, mode, timeout, start_time, new_results)
       end
     end
+  end
+
+  defp default_wait_timeout(nil), do: 600_000
+  defp default_wait_timeout(timeout), do: timeout
+
+  defp clamp_wait_timeout(timeout) do
+    timeout
+    |> max(10_000)
+    |> min(300_000)
   end
 
   defp blackboard_write(state, args) do
@@ -1933,7 +2337,7 @@ defmodule EchsCore.ThreadWorker do
   end
 
   defp kill_subagent(state, args) do
-    agent_id = args["agent_id"]
+    agent_id = args["id"] || args["agent_id"]
     safe_kill(agent_id)
     {child, children} = Map.pop(state.children, agent_id)
 
@@ -1947,26 +2351,56 @@ defmodule EchsCore.ThreadWorker do
   defp exec_command(state, args) do
     cmd = args["cmd"]
     cwd = args["workdir"] || state.cwd
-    shell = args["shell"] || "/bin/bash"
+    shell = args["shell"] || System.get_env("SHELL") || "/bin/bash"
     login = Map.get(args, "login", true)
-    yield_time_ms = args["yield_time_ms"] || 10_000
-    max_tokens = args["max_output_tokens"] || 10_000
+    tty = Map.get(args, "tty", false)
+    yield_time_ms = Map.get(args, "yield_time_ms", 10_000)
+    max_tokens = Map.get(args, "max_output_tokens", 10_000)
 
-    Tools.Exec.exec_command(
-      cmd: cmd,
-      cwd: cwd,
-      shell: shell,
-      login: login,
-      yield_time_ms: yield_time_ms,
-      max_output_tokens: max_tokens
-    )
+    argv = Tools.Exec.command_args(shell, cmd, login)
+
+    case maybe_intercept_apply_patch(state, "exec_command", argv, cwd) do
+      :not_apply_patch ->
+        Tools.Exec.exec_command(
+          cmd: cmd,
+          cwd: cwd,
+          shell: shell,
+          login: login,
+          tty: tty,
+          yield_time_ms: yield_time_ms,
+          max_output_tokens: max_tokens
+        )
+
+      {:error, reason} ->
+        {:error, reason}
+
+      other ->
+        other
+    end
+  end
+
+  defp maybe_intercept_apply_patch(_state, tool_name, command, cwd) do
+    case Tools.ApplyPatchInvocation.maybe_parse_verified(command, cwd) do
+      {:ok, %{patch: patch, cwd: patch_cwd}} ->
+        Logger.warning(
+          "apply_patch was requested via #{tool_name}. Use the apply_patch tool instead of exec_command."
+        )
+
+        Tools.ApplyPatch.apply(patch, cwd: patch_cwd)
+
+      {:error, reason} ->
+        {:error, "apply_patch verification failed: #{reason}"}
+
+      :not_apply_patch ->
+        :not_apply_patch
+    end
   end
 
   defp write_stdin(_state, args) do
     session_id = args["session_id"]
     chars = args["chars"] || ""
-    yield_time_ms = args["yield_time_ms"] || 250
-    max_tokens = args["max_output_tokens"] || 10_000
+    yield_time_ms = Map.get(args, "yield_time_ms", 250)
+    max_tokens = Map.get(args, "max_output_tokens", 10_000)
 
     Tools.Exec.write_stdin(
       session_id: session_id,
@@ -1974,57 +2408,6 @@ defmodule EchsCore.ThreadWorker do
       yield_time_ms: yield_time_ms,
       max_output_tokens: max_tokens
     )
-  end
-
-  defp execute_shell_direct(cmd, args, cwd, timeout_ms) do
-    start_time = System.monotonic_time(:millisecond)
-
-    result =
-      try do
-        {output, exit_code} =
-          System.cmd(cmd, args,
-            cd: cwd,
-            stderr_to_stdout: true,
-            env: [{"TERM", "dumb"}],
-            timeout: timeout_ms
-          )
-
-        {:ok, output, exit_code}
-      rescue
-        e ->
-          {:error, Exception.message(e)}
-      catch
-        :exit, {:timeout, _} ->
-          {:error, :timeout}
-      end
-
-    duration = (System.monotonic_time(:millisecond) - start_time) / 1000
-
-    case result do
-      {:ok, output, exit_code} ->
-        # Truncate if too long
-        max_length = 100_000
-
-        truncated =
-          if String.length(output) > max_length do
-            String.slice(output, 0, max_length) <> "\n... [truncated]"
-          else
-            output
-          end
-
-        """
-        Exit code: #{exit_code}
-        Wall time: #{Float.round(duration, 3)} seconds
-        Output:
-        #{truncated}
-        """
-
-      {:error, :timeout} ->
-        "Exit code: -1\nWall time: #{duration} seconds\nOutput:\nCommand timed out after #{timeout_ms}ms"
-
-      {:error, message} ->
-        "Exit code: -1\nWall time: #{duration} seconds\nOutput:\nError: #{message}"
-    end
   end
 
   defp parse_coordination(nil), do: :hierarchical
@@ -2074,14 +2457,27 @@ defmodule EchsCore.ThreadWorker do
 
   defp apply_config(state, config) when is_map(config) do
     new_cwd = Map.get(config, "cwd", state.cwd)
+    old_model = state.model
+    new_model = Map.get(config, "model", old_model)
+    model_changed = new_model != old_model
+
+    state =
+      state
+      |> maybe_update(:model, new_model)
+      |> maybe_update(:reasoning, config["reasoning"])
+      |> maybe_update(:cwd, new_cwd)
+      |> maybe_update(:instructions, config["instructions"], fn v ->
+        build_instructions(v, new_cwd)
+      end)
+
+    state =
+      if model_changed and is_nil(config["tools"]) and is_nil(config["toolsets"]) do
+        refresh_tools_for_model(state, new_model)
+      else
+        state
+      end
 
     state
-    |> maybe_update(:model, config["model"])
-    |> maybe_update(:reasoning, config["reasoning"])
-    |> maybe_update(:cwd, new_cwd)
-    |> maybe_update(:instructions, config["instructions"], fn v ->
-      build_instructions(v, new_cwd)
-    end)
     |> maybe_update_toolsets(config["toolsets"])
     |> maybe_update_tools(config["tools"])
   end
@@ -2098,7 +2494,7 @@ defmodule EchsCore.ThreadWorker do
 
     case toolsets do
       [] -> state
-      _ -> %{state | tools: tools_for_toolsets(toolsets)}
+      _ -> %{state | tools: tools_for_toolsets(toolsets, state.model)}
     end
   end
 
@@ -2155,10 +2551,10 @@ defmodule EchsCore.ThreadWorker do
 
   defp normalize_toolsets(_), do: []
 
-  defp tools_for_toolsets(toolsets) do
+  defp tools_for_toolsets(toolsets, model) do
     toolsets
     |> ensure_core_toolset()
-    |> Enum.flat_map(&toolset_specs/1)
+    |> Enum.flat_map(&toolset_specs(&1, model))
     |> uniq_tools()
   end
 
@@ -2170,10 +2566,10 @@ defmodule EchsCore.ThreadWorker do
     end
   end
 
-  defp toolset_specs("core"), do: core_tools()
-  defp toolset_specs("codex_forum"), do: Tools.CodexForum.specs()
-  defp toolset_specs("shell"), do: [Tools.Shell.spec()]
-  defp toolset_specs(_), do: []
+  defp toolset_specs("core", model), do: core_tools(model)
+  defp toolset_specs("codex_forum", _model), do: Tools.CodexForum.specs()
+  defp toolset_specs("shell", _model), do: [Tools.Shell.spec()]
+  defp toolset_specs(_, _), do: []
 
   defp add_tool(tools, name) do
     # Add a default tool by name
@@ -2183,6 +2579,9 @@ defmodule EchsCore.ThreadWorker do
       case name do
         "shell" ->
           tools ++ [Tools.Shell.spec()]
+
+        "shell_command" ->
+          tools ++ [Tools.Shell.shell_command_spec()]
 
         "view_image" ->
           tools ++ [Tools.ViewImage.spec()]
@@ -2219,14 +2618,10 @@ defmodule EchsCore.ThreadWorker do
     Enum.reject(tools, &tool_matches?(&1, name))
   end
 
-  defp filter_tools(nil), do: default_tools()
+  defp filter_tools(nil), do: default_subagent_tools()
 
   defp filter_tools(names) when is_list(names) do
-    # Always include exec tools and blackboard for sub-agents
     base = [
-      Tools.Exec.exec_command_spec(),
-      Tools.Exec.write_stdin_spec(),
-      %{"type" => "local_shell"},
       Tools.SubAgent.blackboard_write_spec(),
       Tools.SubAgent.blackboard_read_spec()
     ]
@@ -2240,17 +2635,11 @@ defmodule EchsCore.ThreadWorker do
           "view_image" ->
             [Tools.ViewImage.spec()]
 
-          # Already included
-          "local_shell" ->
-            []
-
-          # Already included
           "exec_command" ->
-            []
+            [Tools.Exec.exec_command_spec()]
 
-          # Already included
           "write_stdin" ->
-            []
+            [Tools.Exec.write_stdin_spec()]
 
           "read_file" ->
             [Tools.Files.read_file_spec()]
@@ -2263,6 +2652,18 @@ defmodule EchsCore.ThreadWorker do
 
           "apply_patch" ->
             [Tools.ApplyPatch.spec()]
+
+          "spawn_agent" ->
+            [Tools.SubAgent.spawn_spec()]
+
+          "send_input" ->
+            [Tools.SubAgent.send_spec()]
+
+          "wait" ->
+            [Tools.SubAgent.wait_spec()]
+
+          "close_agent" ->
+            [Tools.SubAgent.close_spec()]
 
           # Already included
           "blackboard_write" ->
@@ -2290,6 +2691,16 @@ defmodule EchsCore.ThreadWorker do
     uniq_tools(base ++ extra)
   end
 
+  defp default_subagent_tools do
+    uniq_tools([
+      Tools.Files.read_file_spec(),
+      Tools.Files.list_dir_spec(),
+      Tools.Files.grep_files_spec(),
+      Tools.SubAgent.blackboard_write_spec(),
+      Tools.SubAgent.blackboard_read_spec()
+    ])
+  end
+
   defp tool_matches?(tool, name), do: tool_key(tool) == name
 
   defp tool_key(tool) do
@@ -2314,6 +2725,36 @@ defmodule EchsCore.ThreadWorker do
     Enum.uniq_by(tools, &tool_key/1)
   end
 
+  defp refresh_tools_for_model(state, model) do
+    extras =
+      Enum.reject(state.tools, fn tool ->
+        tool_name = tool_key(tool)
+        is_binary(tool_name) and tool_name in core_tool_names()
+      end)
+
+    %{state | tools: uniq_tools(core_tools(model) ++ extras)}
+  end
+
+  defp core_tool_names do
+    [
+      "shell",
+      "shell_command",
+      "exec_command",
+      "write_stdin",
+      "read_file",
+      "list_dir",
+      "grep_files",
+      "apply_patch",
+      "view_image",
+      "spawn_agent",
+      "send_input",
+      "wait",
+      "close_agent",
+      "blackboard_write",
+      "blackboard_read"
+    ]
+  end
+
   defp build_instructions(nil, cwd) do
     String.replace(@default_system_prompt, "{{cwd}}", cwd)
   end
@@ -2322,29 +2763,33 @@ defmodule EchsCore.ThreadWorker do
     String.replace(custom, "{{cwd}}", cwd)
   end
 
-  defp core_tools do
-    [
-      # UnifiedExec-style session tools (port-backed stdio)
-      Tools.Exec.exec_command_spec(),
-      Tools.Exec.write_stdin_spec(),
-      # Also keep local_shell for backward compatibility
-      %{"type" => "local_shell"},
-      Tools.Files.read_file_spec(),
-      Tools.Files.list_dir_spec(),
-      Tools.Files.grep_files_spec(),
-      Tools.ApplyPatch.spec(),
-      Tools.ViewImage.spec(),
-      Tools.SubAgent.spawn_spec(),
-      Tools.SubAgent.send_spec(),
-      Tools.SubAgent.wait_spec(),
-      Tools.SubAgent.blackboard_write_spec(),
-      Tools.SubAgent.blackboard_read_spec(),
-      Tools.SubAgent.kill_spec()
-    ]
+  defp core_tools(model) do
+    shell_tools =
+      case ModelInfo.shell_tool_type(model) do
+        :shell_command -> [Tools.Shell.shell_command_spec()]
+        :shell -> [Tools.Shell.spec()]
+        :exec -> [Tools.Exec.exec_command_spec(), Tools.Exec.write_stdin_spec()]
+        _ -> [Tools.Exec.exec_command_spec(), Tools.Exec.write_stdin_spec()]
+      end
+
+    shell_tools ++
+      [
+        Tools.Files.read_file_spec(),
+        Tools.Files.list_dir_spec(),
+        Tools.Files.grep_files_spec(),
+        Tools.ApplyPatch.spec(),
+        Tools.ViewImage.spec(),
+        Tools.SubAgent.spawn_spec(),
+        Tools.SubAgent.send_spec(),
+        Tools.SubAgent.wait_spec(),
+        Tools.SubAgent.blackboard_write_spec(),
+        Tools.SubAgent.blackboard_read_spec(),
+        Tools.SubAgent.close_spec()
+      ]
   end
 
-  defp default_tools do
-    uniq_tools(core_tools() ++ Tools.CodexForum.specs())
+  defp default_tools(model) do
+    uniq_tools(core_tools(model) ++ Tools.CodexForum.specs())
   end
 
   defp config_summary(state) do
