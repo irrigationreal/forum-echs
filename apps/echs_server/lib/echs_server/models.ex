@@ -31,22 +31,25 @@ defmodule EchsServer.Models do
     %{
       "id" => "opus",
       "family" => "claude",
-      "supports_reasoning" => false,
+      "supports_reasoning" => true,
       "supports_tools" => true,
+      "default_reasoning" => "medium",
       "context_window_tokens" => 200_000
     },
     %{
       "id" => "sonnet",
       "family" => "claude",
-      "supports_reasoning" => false,
+      "supports_reasoning" => true,
       "supports_tools" => true,
+      "default_reasoning" => "medium",
       "context_window_tokens" => 200_000
     },
     %{
       "id" => "haiku",
       "family" => "claude",
-      "supports_reasoning" => false,
+      "supports_reasoning" => true,
       "supports_tools" => true,
+      "default_reasoning" => "medium",
       "context_window_tokens" => 200_000
     }
   ]
@@ -96,7 +99,11 @@ defmodule EchsServer.Models do
         "id" => id,
         "family" => family,
         "label" => label,
-        "supports_reasoning" => supports_reasoning || family == "codex",
+        "supports_reasoning" =>
+          case supports_reasoning do
+            nil -> family in ["codex", "claude"]
+            value -> value
+          end,
         "supports_tools" => supports_tools != false,
         "default_reasoning" => default_reasoning,
         "context_window_tokens" => window

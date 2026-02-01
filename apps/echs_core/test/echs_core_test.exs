@@ -78,4 +78,16 @@ defmodule EchsCore.ThreadWorkerToolTest do
     assert "write_stdin" in tool_names
     assert "custom_tool_refresh" in tool_names
   end
+
+  test "reasoning config normalizes on update" do
+    {:ok, thread_id} = ThreadWorker.create(reasoning: "high")
+
+    assert :ok == ThreadWorker.configure(thread_id, %{"reasoning" => "none"})
+    state = ThreadWorker.get_state(thread_id)
+    assert state.reasoning == "none"
+
+    assert :ok == ThreadWorker.configure(thread_id, %{"reasoning" => "invalid"})
+    state = ThreadWorker.get_state(thread_id)
+    assert state.reasoning == "none"
+  end
 end

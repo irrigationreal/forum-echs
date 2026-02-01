@@ -13,81 +13,79 @@ defmodule EchsCore.Tools.ApplyPatch do
   @change_context "@@ "
   @empty_change_context "@@"
 
-
   def spec do
     %{
       "type" => "function",
       "name" => "apply_patch",
-      "description" =>
-        ~s"""
-Use the `apply_patch` tool to edit files.
-Your patch language is a stripped‑down, file‑oriented diff format designed to be easy to parse and safe to apply. You can think of it as a high‑level envelope:
+      "description" => ~s"""
+      Use the `apply_patch` tool to edit files.
+      Your patch language is a stripped‑down, file‑oriented diff format designed to be easy to parse and safe to apply. You can think of it as a high‑level envelope:
 
-*** Begin Patch
-[ one or more file sections ]
-*** End Patch
+      *** Begin Patch
+      [ one or more file sections ]
+      *** End Patch
 
-Within that envelope, you get a sequence of file operations.
-You MUST include a header to specify the action you are taking.
-Each operation starts with one of three headers:
+      Within that envelope, you get a sequence of file operations.
+      You MUST include a header to specify the action you are taking.
+      Each operation starts with one of three headers:
 
-*** Add File: <path> - create a new file. Every following line is a + line (the initial contents).
-*** Delete File: <path> - remove an existing file. Nothing follows.
-*** Update File: <path> - patch an existing file in place (optionally with a rename).
+      *** Add File: <path> - create a new file. Every following line is a + line (the initial contents).
+      *** Delete File: <path> - remove an existing file. Nothing follows.
+      *** Update File: <path> - patch an existing file in place (optionally with a rename).
 
-May be immediately followed by *** Move to: <new path> if you want to rename the file.
-Then one or more “hunks”, each introduced by @@ (optionally followed by a hunk header).
-Within a hunk each line starts with:
+      May be immediately followed by *** Move to: <new path> if you want to rename the file.
+      Then one or more “hunks”, each introduced by @@ (optionally followed by a hunk header).
+      Within a hunk each line starts with:
 
-For instructions on [context_before] and [context_after]:
-- By default, show 3 lines of code immediately above and 3 lines immediately below each change. If a change is within 3 lines of a previous change, do NOT duplicate the first change’s [context_after] lines in the second change’s [context_before] lines.
-- If 3 lines of context is insufficient to uniquely identify the snippet of code within the file, use the @@ operator to indicate the class or function to which the snippet belongs. For instance, we might have:
-@@ class BaseClass
-[3 lines of pre-context]
-- [old_code]
-+ [new_code]
-[3 lines of post-context]
+      For instructions on [context_before] and [context_after]:
+      - By default, show 3 lines of code immediately above and 3 lines immediately below each change. If a change is within 3 lines of a previous change, do NOT duplicate the first change’s [context_after] lines in the second change’s [context_before] lines.
+      - If 3 lines of context is insufficient to uniquely identify the snippet of code within the file, use the @@ operator to indicate the class or function to which the snippet belongs. For instance, we might have:
+      @@ class BaseClass
+      [3 lines of pre-context]
+      - [old_code]
+      + [new_code]
+      [3 lines of post-context]
 
-- If a code block is repeated so many times in a class or function such that even a single `@@` statement and 3 lines of context cannot uniquely identify the snippet of code, you can use multiple `@@` statements to jump to the right context. For instance:
+      - If a code block is repeated so many times in a class or function such that even a single `@@` statement and 3 lines of context cannot uniquely identify the snippet of code, you can use multiple `@@` statements to jump to the right context. For instance:
 
-@@ class BaseClass
-@@ 	 def method():
-[3 lines of pre-context]
-- [old_code]
-+ [new_code]
-[3 lines of post-context]
+      @@ class BaseClass
+      @@ 	 def method():
+      [3 lines of pre-context]
+      - [old_code]
+      + [new_code]
+      [3 lines of post-context]
 
-The full grammar definition is below:
-Patch := Begin { FileOp } End
-Begin := "*** Begin Patch" NEWLINE
-End := "*** End Patch" NEWLINE
-FileOp := AddFile | DeleteFile | UpdateFile
-AddFile := "*** Add File: " path NEWLINE { "+" line NEWLINE }
-DeleteFile := "*** Delete File: " path NEWLINE
-UpdateFile := "*** Update File: " path NEWLINE [ MoveTo ] { Hunk }
-MoveTo := "*** Move to: " newPath NEWLINE
-Hunk := "@@" [ header ] NEWLINE { HunkLine } [ "*** End of File" NEWLINE ]
-HunkLine := (" " | "-" | "+") text NEWLINE
+      The full grammar definition is below:
+      Patch := Begin { FileOp } End
+      Begin := "*** Begin Patch" NEWLINE
+      End := "*** End Patch" NEWLINE
+      FileOp := AddFile | DeleteFile | UpdateFile
+      AddFile := "*** Add File: " path NEWLINE { "+" line NEWLINE }
+      DeleteFile := "*** Delete File: " path NEWLINE
+      UpdateFile := "*** Update File: " path NEWLINE [ MoveTo ] { Hunk }
+      MoveTo := "*** Move to: " newPath NEWLINE
+      Hunk := "@@" [ header ] NEWLINE { HunkLine } [ "*** End of File" NEWLINE ]
+      HunkLine := (" " | "-" | "+") text NEWLINE
 
-A full patch can combine several operations:
+      A full patch can combine several operations:
 
-*** Begin Patch
-*** Add File: hello.txt
-+Hello world
-*** Update File: src/app.py
-*** Move to: src/main.py
-@@ def greet():
--print("Hi")
-+print("Hello, world!")
-*** Delete File: obsolete.txt
-*** End Patch
+      *** Begin Patch
+      *** Add File: hello.txt
+      +Hello world
+      *** Update File: src/app.py
+      *** Move to: src/main.py
+      @@ def greet():
+      -print("Hi")
+      +print("Hello, world!")
+      *** Delete File: obsolete.txt
+      *** End Patch
 
-It is important to remember:
+      It is important to remember:
 
-- You must include a header with your intended action (Add/Delete/Update)
-- You must prefix new lines with `+` even when creating a new file
-- File references can only be relative, NEVER ABSOLUTE.
-""",
+      - You must include a header with your intended action (Add/Delete/Update)
+      - You must prefix new lines with `+` even when creating a new file
+      - File references can only be relative, NEVER ABSOLUTE.
+      """,
       "strict" => false,
       "parameters" => %{
         "type" => "object",
@@ -102,6 +100,8 @@ It is important to remember:
       }
     }
   end
+
+  def spec(_tool_type), do: spec()
 
   @doc """
   Apply a patch string to files.
@@ -244,6 +244,7 @@ It is important to remember:
       String.starts_with?(first_line, @update_file) ->
         path = String.replace_prefix(first_line, @update_file, "")
         {move_path, remaining, consumed} = parse_move_line(Enum.drop(lines, 1), 1)
+
         parse_update_chunks(remaining, line_number + consumed, [], 0)
         |> case do
           {:ok, {chunks, chunk_lines}} ->
@@ -280,6 +281,7 @@ It is important to remember:
 
   defp parse_move_line([line | rest], consumed) do
     trimmed = String.trim(line)
+
     if String.starts_with?(trimmed, @move_to) do
       {String.replace_prefix(trimmed, @move_to, ""), rest, consumed + 1}
     else
@@ -335,7 +337,8 @@ It is important to remember:
        "invalid hunk at line #{line_number}, Expected update hunk to start with a @@ context marker, got: '#{first}'"}
     else
       if start_index >= length(lines) do
-        {:error, "invalid hunk at line #{line_number + 1}, Update hunk does not contain any lines"}
+        {:error,
+         "invalid hunk at line #{line_number + 1}, Update hunk does not contain any lines"}
       else
         chunk = %{
           change_context: change_context,
@@ -356,64 +359,62 @@ It is important to remember:
     end
   end
 
-  defp parse_update_lines([], line_number, _chunk, _parsed_lines) do
-    {:error, "invalid hunk at line #{line_number}, Update hunk does not contain any lines"}
+  defp parse_update_lines([], line_number, chunk, parsed_lines) do
+    if parsed_lines == 0 do
+      {:error, "invalid hunk at line #{line_number}, Update hunk does not contain any lines"}
+    else
+      {:ok, {chunk, parsed_lines}}
+    end
   end
 
-  defp parse_update_lines(lines, line_number, chunk, parsed_lines) do
-    case lines do
-      [] ->
-        {:ok, {chunk, parsed_lines}}
+  defp parse_update_lines([line | rest], line_number, chunk, parsed_lines) do
+    cond do
+      line == @end_of_file ->
+        if parsed_lines == 0 do
+          {:error, "invalid hunk at line #{line_number}, Update hunk does not contain any lines"}
+        else
+          chunk = %{chunk | is_end_of_file: true}
+          {:ok, {chunk, parsed_lines + 1}}
+        end
 
-      [line | rest] ->
-        cond do
-          line == @end_of_file ->
+      true ->
+        case String.first(line) do
+          nil ->
+            chunk = %{
+              chunk
+              | old_lines: chunk.old_lines ++ [""],
+                new_lines: chunk.new_lines ++ [""]
+            }
+
+            parse_update_lines(rest, line_number + 1, chunk, parsed_lines + 1)
+
+          " " ->
+            text = String.slice(line, 1..-1//1)
+
+            chunk = %{
+              chunk
+              | old_lines: chunk.old_lines ++ [text],
+                new_lines: chunk.new_lines ++ [text]
+            }
+
+            parse_update_lines(rest, line_number + 1, chunk, parsed_lines + 1)
+
+          "+" ->
+            text = String.slice(line, 1..-1//1)
+            chunk = %{chunk | new_lines: chunk.new_lines ++ [text]}
+            parse_update_lines(rest, line_number + 1, chunk, parsed_lines + 1)
+
+          "-" ->
+            text = String.slice(line, 1..-1//1)
+            chunk = %{chunk | old_lines: chunk.old_lines ++ [text]}
+            parse_update_lines(rest, line_number + 1, chunk, parsed_lines + 1)
+
+          _ ->
             if parsed_lines == 0 do
               {:error,
-               "invalid hunk at line #{line_number}, Update hunk does not contain any lines"}
+               "invalid hunk at line #{line_number}, Unexpected line found in update hunk: '#{line}'. Every line should start with ' ' (context line), '+' (added line), or '-' (removed line)"}
             else
-              chunk = %{chunk | is_end_of_file: true}
-              {:ok, {chunk, parsed_lines + 1}}
-            end
-
-          true ->
-            case String.first(line) do
-              nil ->
-                chunk = %{
-                  chunk
-                  | old_lines: chunk.old_lines ++ [""],
-                    new_lines: chunk.new_lines ++ [""]
-                }
-
-                parse_update_lines(rest, line_number + 1, chunk, parsed_lines + 1)
-
-              " " ->
-                text = String.slice(line, 1..-1//1)
-                chunk = %{
-                  chunk
-                  | old_lines: chunk.old_lines ++ [text],
-                    new_lines: chunk.new_lines ++ [text]
-                }
-
-                parse_update_lines(rest, line_number + 1, chunk, parsed_lines + 1)
-
-              "+" ->
-                text = String.slice(line, 1..-1//1)
-                chunk = %{chunk | new_lines: chunk.new_lines ++ [text]}
-                parse_update_lines(rest, line_number + 1, chunk, parsed_lines + 1)
-
-              "-" ->
-                text = String.slice(line, 1..-1//1)
-                chunk = %{chunk | old_lines: chunk.old_lines ++ [text]}
-                parse_update_lines(rest, line_number + 1, chunk, parsed_lines + 1)
-
-              _ ->
-                if parsed_lines == 0 do
-                  {:error,
-                   "invalid hunk at line #{line_number}, Unexpected line found in update hunk: '#{line}'. Every line should start with ' ' (context line), '+' (added line), or '-' (removed line)"}
-                else
-                  {:ok, {chunk, parsed_lines}}
-                end
+              {:ok, {chunk, parsed_lines}}
             end
         end
     end
@@ -426,23 +427,25 @@ It is important to remember:
     modified = []
     deleted = []
 
-    Enum.reduce_while(hunks, {:ok, %{added: added, modified: modified, deleted: deleted}}, fn hunk,
-                                                                                            {:ok,
-                                                                                             acc} ->
-      case apply_hunk(hunk, cwd) do
-        {:ok, {:add, path}} ->
-          {:cont, {:ok, %{acc | added: acc.added ++ [path]}}}
+    Enum.reduce_while(
+      hunks,
+      {:ok, %{added: added, modified: modified, deleted: deleted}},
+      fn hunk, {:ok, acc} ->
+        case apply_hunk(hunk, cwd) do
+          {:ok, {:add, path}} ->
+            {:cont, {:ok, %{acc | added: acc.added ++ [path]}}}
 
-        {:ok, {:delete, path}} ->
-          {:cont, {:ok, %{acc | deleted: acc.deleted ++ [path]}}}
+          {:ok, {:delete, path}} ->
+            {:cont, {:ok, %{acc | deleted: acc.deleted ++ [path]}}}
 
-        {:ok, {:modify, path}} ->
-          {:cont, {:ok, %{acc | modified: acc.modified ++ [path]}}}
+          {:ok, {:modify, path}} ->
+            {:cont, {:ok, %{acc | modified: acc.modified ++ [path]}}}
 
-        {:error, reason} ->
-          {:halt, {:error, reason}}
+          {:error, reason} ->
+            {:halt, {:error, reason}}
+        end
       end
-    end)
+    )
   end
 
   defp apply_hunk(%{type: :add, path: path, contents: contents}, cwd) do
@@ -461,8 +464,11 @@ It is important to remember:
     full_path = Path.expand(path, cwd)
 
     case File.rm(full_path) do
-      :ok -> {:ok, {:delete, full_path}}
-      {:error, reason} -> {:error, "Failed to delete file #{full_path}: #{:file.format_error(reason)}"}
+      :ok ->
+        {:ok, {:delete, full_path}}
+
+      {:error, reason} ->
+        {:error, "Failed to delete file #{full_path}: #{:file.format_error(reason)}"}
     end
   end
 
@@ -510,8 +516,11 @@ It is important to remember:
       :ok
     else
       case File.rm(src) do
-        :ok -> :ok
-        {:error, reason} -> {:error, "Failed to remove original #{src}: #{:file.format_error(reason)}"}
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          {:error, "Failed to remove original #{src}: #{:file.format_error(reason)}"}
       end
     end
   end
@@ -603,7 +612,8 @@ It is important to remember:
 
             start_idx ->
               {:cont,
-               {:ok, {acc ++ [{start_idx, length(pattern), new_lines}], start_idx + length(pattern)}}}
+               {:ok,
+                {acc ++ [{start_idx, length(pattern), new_lines}], start_idx + length(pattern)}}}
           end
       end
     end)

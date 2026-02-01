@@ -19,23 +19,23 @@ defmodule EchsCore.Tools.Shell do
       "description" =>
         if match?({:win32, _}, :os.type()) do
           ~s"""
-Runs a Powershell command (Windows) and returns its output. Arguments to `shell` will be passed to CreateProcessW(). Most commands should be prefixed with ["powershell.exe", "-Command"].
+          Runs a Powershell command (Windows) and returns its output. Arguments to `shell` will be passed to CreateProcessW(). Most commands should be prefixed with ["powershell.exe", "-Command"].
 
-Examples of valid command strings:
+          Examples of valid command strings:
 
-- ls -a (show hidden): ["powershell.exe", "-Command", "Get-ChildItem -Force"]
-- recursive find by name: ["powershell.exe", "-Command", "Get-ChildItem -Recurse -Filter *.py"]
-- recursive grep: ["powershell.exe", "-Command", "Get-ChildItem -Path C:\\myrepo -Recurse | Select-String -Pattern 'TODO' -CaseSensitive"]
-- ps aux | grep python: ["powershell.exe", "-Command", "Get-Process | Where-Object { $_.ProcessName -like '*python*' }"]
-- setting an env var: ["powershell.exe", "-Command", "$env:FOO='bar'; echo $env:FOO"]
-- running an inline Python script: ["powershell.exe", "-Command", "@'\\nprint('Hello, world!')\\n'@ | python -"]
-"""
+          - ls -a (show hidden): ["powershell.exe", "-Command", "Get-ChildItem -Force"]
+          - recursive find by name: ["powershell.exe", "-Command", "Get-ChildItem -Recurse -Filter *.py"]
+          - recursive grep: ["powershell.exe", "-Command", "Get-ChildItem -Path C:\\myrepo -Recurse | Select-String -Pattern 'TODO' -CaseSensitive"]
+          - ps aux | grep python: ["powershell.exe", "-Command", "Get-Process | Where-Object { $_.ProcessName -like '*python*' }"]
+          - setting an env var: ["powershell.exe", "-Command", "$env:FOO='bar'; echo $env:FOO"]
+          - running an inline Python script: ["powershell.exe", "-Command", "@'\\nprint('Hello, world!')\\n'@ | python -"]
+          """
         else
           ~s"""
-Runs a shell command and returns its output.
-- The arguments to `shell` will be passed to execvp(). Most terminal commands should be prefixed with ["bash", "-lc"].
-- Always set the `workdir` param when using the shell function. Do not use `cd` unless absolutely necessary.
-"""
+          Runs a shell command and returns its output.
+          - The arguments to `shell` will be passed to execvp(). Most terminal commands should be prefixed with ["bash", "-lc"].
+          - Always set the `workdir` param when using the shell function. Do not use `cd` unless absolutely necessary.
+          """
         end,
       "strict" => false,
       "parameters" => %{
@@ -84,22 +84,22 @@ Runs a shell command and returns its output.
       "description" =>
         if match?({:win32, _}, :os.type()) do
           ~s"""
-Runs a Powershell command (Windows) and returns its output.
+          Runs a Powershell command (Windows) and returns its output.
 
-Examples of valid command strings:
+          Examples of valid command strings:
 
-- ls -a (show hidden): "Get-ChildItem -Force"
-- recursive find by name: "Get-ChildItem -Recurse -Filter *.py"
-- recursive grep: "Get-ChildItem -Path C:\\myrepo -Recurse | Select-String -Pattern 'TODO' -CaseSensitive"
-- ps aux | grep python: "Get-Process | Where-Object { $_.ProcessName -like '*python*' }"
-- setting an env var: "$env:FOO='bar'; echo $env:FOO"
-- running an inline Python script: "@'\\nprint('Hello, world!')\\n'@ | python -"
-"""
+          - ls -a (show hidden): "Get-ChildItem -Force"
+          - recursive find by name: "Get-ChildItem -Recurse -Filter *.py"
+          - recursive grep: "Get-ChildItem -Path C:\\myrepo -Recurse | Select-String -Pattern 'TODO' -CaseSensitive"
+          - ps aux | grep python: "Get-Process | Where-Object { $_.ProcessName -like '*python*' }"
+          - setting an env var: "$env:FOO='bar'; echo $env:FOO"
+          - running an inline Python script: "@'\\nprint('Hello, world!')\\n'@ | python -"
+          """
         else
           ~s"""
-Runs a shell command and returns its output.
-- Always set the `workdir` param when using the shell_command function. Do not use `cd` unless absolutely necessary.
-"""
+          Runs a shell command and returns its output.
+          - Always set the `workdir` param when using the shell_command function. Do not use `cd` unless absolutely necessary.
+          """
         end,
       "strict" => false,
       "parameters" => %{
@@ -158,7 +158,13 @@ Runs a shell command and returns its output.
             format_structured(output, exit_code, duration_ms, timed_out, truncation_policy)
 
           {:error, message, duration_ms} ->
-            format_structured("execution error: #{message}", -1, duration_ms, false, truncation_policy)
+            format_structured(
+              "execution error: #{message}",
+              -1,
+              duration_ms,
+              false,
+              truncation_policy
+            )
         end
 
       _ ->
@@ -183,6 +189,10 @@ Runs a shell command and returns its output.
       {:error, message, duration_ms} ->
         format_freeform("execution error: #{message}", -1, duration_ms, false, truncation_policy)
     end
+  end
+
+  def format_freeform_output(output, exit_code, duration_ms, timed_out, truncation_policy) do
+    format_freeform(output, exit_code, duration_ms, timed_out, truncation_policy)
   end
 
   defp run_command(argv, cwd, timeout_ms) do
@@ -213,6 +223,7 @@ Runs a shell command and returns its output.
 
   defp collect_shell_output(os_pid, timeout_ms) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
+
     {stdout, stderr, exit_code, timed_out} =
       loop_collect(os_pid, [], [], deadline, nil, false, nil)
 
@@ -250,12 +261,36 @@ Runs a shell command and returns its output.
 
         receive do
           {:stdout, ^os_pid, data} when is_binary(data) ->
-            new_deadline = if exit_code != nil, do: System.monotonic_time(:millisecond) + @post_exit_grace_ms, else: exit_grace_deadline
-            loop_collect(os_pid, [data | out_acc], err_acc, deadline, exit_code, timed_out, new_deadline)
+            new_deadline =
+              if exit_code != nil,
+                do: System.monotonic_time(:millisecond) + @post_exit_grace_ms,
+                else: exit_grace_deadline
+
+            loop_collect(
+              os_pid,
+              [data | out_acc],
+              err_acc,
+              deadline,
+              exit_code,
+              timed_out,
+              new_deadline
+            )
 
           {:stderr, ^os_pid, data} when is_binary(data) ->
-            new_deadline = if exit_code != nil, do: System.monotonic_time(:millisecond) + @post_exit_grace_ms, else: exit_grace_deadline
-            loop_collect(os_pid, out_acc, [data | err_acc], deadline, exit_code, timed_out, new_deadline)
+            new_deadline =
+              if exit_code != nil,
+                do: System.monotonic_time(:millisecond) + @post_exit_grace_ms,
+                else: exit_grace_deadline
+
+            loop_collect(
+              os_pid,
+              out_acc,
+              [data | err_acc],
+              deadline,
+              exit_code,
+              timed_out,
+              new_deadline
+            )
 
           {'DOWN', ^os_pid, _process, _pid, reason} ->
             code = reason_to_exit_code(reason)

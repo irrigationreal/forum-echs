@@ -43,6 +43,9 @@ defmodule EchsClaude do
     config = load_config()
     model = resolve_model_alias(model_alias, config)
 
+    reasoning = Keyword.get(opts, :reasoning, "medium")
+    emit_reasoning? = reasoning_enabled?(reasoning)
+
     tools_payload = build_tools(tools, tool_allowlist)
     {input, _injected?} = ensure_instructions_in_first_user_message(input, instructions)
     messages = build_messages(input)
@@ -64,7 +67,15 @@ defmodule EchsClaude do
     end)
 
     {:ok, state_agent} =
-      Agent.start_link(fn -> %{text: "", blocks: %{}, had_text: false, tool_items: []} end)
+      Agent.start_link(fn ->
+        %{
+          text: "",
+          blocks: %{},
+          had_text: false,
+          tool_items: [],
+          emit_reasoning?: emit_reasoning?
+        }
+      end)
 
     handler = build_sse_handler(state_agent, on_event)
 
@@ -138,12 +149,14 @@ defmodule EchsClaude do
     end
   end
 
-  defp start_content_block(state_agent, %{"index" => index, "content_block" => block}, _on_event)
+  defp start_content_block(state_agent, %{"index" => index, "content_block" => block}, on_event)
        when is_map(block) do
     Agent.update(state_agent, fn state ->
       blocks = Map.put(state.blocks, index, normalize_block(block))
       %{state | blocks: blocks}
     end)
+
+    maybe_emit_reasoning_block(state_agent, block, on_event)
 
     :ok
   end
@@ -163,6 +176,9 @@ defmodule EchsClaude do
 
           on_event.(%{"type" => "response.output_text.delta", "delta" => text})
         end
+
+      "thinking_delta" ->
+        maybe_emit_reasoning_delta(state_agent, delta, on_event)
 
       "input_json_delta" ->
         json = delta["partial_json"] || delta["text"] || ""
@@ -237,12 +253,73 @@ defmodule EchsClaude do
     end)
   end
 
+  @doc false
+  def test_normalize_events(events, opts \\ []) when is_list(events) do
+    reasoning = Keyword.get(opts, :reasoning, "medium")
+    emit_reasoning? = reasoning_enabled?(reasoning)
+
+    {:ok, state_agent} =
+      Agent.start_link(fn ->
+        %{
+          text: "",
+          blocks: %{},
+          had_text: false,
+          tool_items: [],
+          emit_reasoning?: emit_reasoning?
+        }
+      end)
+
+    {:ok, events_agent} = Agent.start_link(fn -> [] end)
+
+    on_event = fn event ->
+      Agent.update(events_agent, fn acc -> acc ++ [event] end)
+    end
+
+    Enum.each(events, fn event -> handle_anthropic_event(state_agent, event, on_event) end)
+
+    normalized = Agent.get(events_agent, & &1)
+    Agent.stop(events_agent)
+    Agent.stop(state_agent)
+    normalized
+  end
+
   defp normalize_block(%{"type" => "tool_use"} = block) do
     block
     |> Map.put_new("input_json", "")
   end
 
+  defp normalize_block(%{"type" => "thinking"} = block) do
+    block
+    |> Map.put_new("thinking", block["text"] || "")
+  end
+
   defp normalize_block(block), do: block
+
+  defp maybe_emit_reasoning_block(state_agent, %{"type" => "thinking"} = block, on_event) do
+    text = block["thinking"] || block["text"] || ""
+    maybe_emit_reasoning_text(state_agent, text, on_event)
+  end
+
+  defp maybe_emit_reasoning_block(_state_agent, _block, _on_event), do: :ok
+
+  defp maybe_emit_reasoning_delta(state_agent, delta, on_event) do
+    text = delta["thinking"] || delta["text"] || ""
+    maybe_emit_reasoning_text(state_agent, text, on_event)
+  end
+
+  defp maybe_emit_reasoning_text(state_agent, text, on_event) do
+    trimmed = to_string(text || "")
+
+    if trimmed != "" do
+      emit? = Agent.get(state_agent, fn state -> state.emit_reasoning? end)
+
+      if emit? do
+        on_event.(%{"type" => "response.reasoning_summary.delta", "delta" => trimmed})
+      end
+    end
+
+    :ok
+  end
 
   defp tool_block_to_item(block, input) do
     name = block["name"] || ""
@@ -384,6 +461,12 @@ defmodule EchsClaude do
   end
 
   defp normalize_content(_), do: []
+
+  defp reasoning_enabled?(reasoning) when is_binary(reasoning) do
+    String.trim(reasoning) != "none"
+  end
+
+  defp reasoning_enabled?(_), do: true
 
   defp merge_consecutive_roles(messages) do
     messages

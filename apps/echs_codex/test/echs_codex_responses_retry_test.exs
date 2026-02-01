@@ -115,6 +115,54 @@ defmodule EchsCodex.ResponsesRetryTest do
              )
   end
 
+  test "stream_response retries once without reasoning payload on 400/403" do
+    stub = {__MODULE__, make_ref()}
+
+    previous = System.get_env("ECHS_REASONING_SUMMARY")
+
+    on_exit(fn ->
+      if is_nil(previous) do
+        System.delete_env("ECHS_REASONING_SUMMARY")
+      else
+        System.put_env("ECHS_REASONING_SUMMARY", previous)
+      end
+    end)
+
+    System.put_env("ECHS_REASONING_SUMMARY", "auto")
+
+    Req.Test.expect(stub, fn conn ->
+      assert get_in(conn.body_params, ["reasoning", "summary"]) == "auto"
+      Plug.Conn.send_resp(conn, 403, "forbidden")
+    end)
+
+    Req.Test.expect(stub, fn conn ->
+      reasoning = conn.body_params["reasoning"] || %{}
+      assert Map.get(reasoning, "summary") == nil
+      Plug.Conn.send_resp(conn, 400, "bad request")
+    end)
+
+    Req.Test.expect(stub, fn conn ->
+      assert Map.has_key?(conn.body_params, "reasoning") == false
+
+      conn
+      |> Plug.Conn.put_resp_content_type("text/event-stream")
+      |> Plug.Conn.send_resp(200, "data: [DONE]\n\n")
+    end)
+
+    on_event = fn _event -> :ok end
+
+    assert {:ok, %{status: 200}} =
+             Responses.stream_response(
+               model: "gpt-5.2-codex",
+               instructions: "test",
+               input: [],
+               tools: [],
+               reasoning: "medium",
+               on_event: on_event,
+               req_opts: [plug: {Req.Test, stub}]
+             )
+  end
+
   test "compact retries transient HTTP errors for POST" do
     stub = {__MODULE__, make_ref()}
 
@@ -144,7 +192,38 @@ defmodule EchsCodex.ResponsesRetryTest do
   test "stream_response captures error response body for non-200 responses" do
     stub = {__MODULE__, make_ref()}
 
+    previous = System.get_env("ECHS_REASONING_SUMMARY")
+
+    on_exit(fn ->
+      if is_nil(previous) do
+        System.delete_env("ECHS_REASONING_SUMMARY")
+      else
+        System.put_env("ECHS_REASONING_SUMMARY", previous)
+      end
+    end)
+
+    System.put_env("ECHS_REASONING_SUMMARY", "auto")
+
     Req.Test.expect(stub, fn conn ->
+      assert get_in(conn.body_params, ["reasoning", "summary"]) == "auto"
+
+      conn
+      |> Plug.Conn.put_status(400)
+      |> Req.Test.json(%{"error" => "bad_request", "detail" => "invalid payload"})
+    end)
+
+    Req.Test.expect(stub, fn conn ->
+      reasoning = conn.body_params["reasoning"] || %{}
+      assert Map.get(reasoning, "summary") == nil
+
+      conn
+      |> Plug.Conn.put_status(400)
+      |> Req.Test.json(%{"error" => "bad_request", "detail" => "invalid payload"})
+    end)
+
+    Req.Test.expect(stub, fn conn ->
+      assert Map.has_key?(conn.body_params, "reasoning") == false
+
       conn
       |> Plug.Conn.put_status(400)
       |> Req.Test.json(%{"error" => "bad_request", "detail" => "invalid payload"})
@@ -158,7 +237,7 @@ defmodule EchsCodex.ResponsesRetryTest do
                instructions: "test",
                input: [],
                tools: [],
-               reasoning: "none",
+               reasoning: "medium",
                on_event: on_event,
                req_opts: [plug: {Req.Test, stub}]
              )

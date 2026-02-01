@@ -20,19 +20,21 @@ defmodule EchsCore.HistorySanitizer do
       when is_list(history_items) and is_integer(now_ms) and now_ms >= 0 do
     output_call_ids =
       history_items
-      |> Enum.filter(&(&1["type"] == "function_call_output"))
+      |> Enum.filter(&(&1["type"] in ["function_call_output", "custom_tool_call_output"]))
       |> Enum.map(&(&1["call_id"] || ""))
       |> Enum.filter(&is_binary/1)
       |> MapSet.new()
 
     history_items
-    |> Enum.filter(&(&1["type"] in ["function_call", "local_shell_call"]))
-    |> Enum.map(fn item -> {call_id(item), tool_name(item)} end)
-    |> Enum.filter(fn {call_id, _name} ->
+    |> Enum.filter(&(&1["type"] in ["function_call", "local_shell_call", "custom_tool_call"]))
+    |> Enum.map(fn item -> {call_id(item), tool_name(item), output_type(item)} end)
+    |> Enum.filter(fn {call_id, _name, _type} ->
       is_binary(call_id) and call_id != "" and not MapSet.member?(output_call_ids, call_id)
     end)
-    |> Enum.uniq_by(fn {call_id, _name} -> call_id end)
-    |> Enum.map(fn {call_id, name} -> build_missing_output_item(call_id, name, now_ms) end)
+    |> Enum.uniq_by(fn {call_id, _name, _type} -> call_id end)
+    |> Enum.map(fn {call_id, name, type} ->
+      build_missing_output_item(call_id, name, now_ms, type)
+    end)
   end
 
   defp call_id(%{"call_id" => call_id}) when is_binary(call_id) and call_id != "", do: call_id
@@ -43,9 +45,12 @@ defmodule EchsCore.HistorySanitizer do
   defp tool_name(%{"type" => type}) when is_binary(type), do: type
   defp tool_name(_), do: "tool"
 
-  defp build_missing_output_item(call_id, name, now_ms) do
+  defp output_type(%{"type" => "custom_tool_call"}), do: "custom_tool_call_output"
+  defp output_type(_), do: "function_call_output"
+
+  defp build_missing_output_item(call_id, name, now_ms, output_type) do
     %{
-      "type" => "function_call_output",
+      "type" => output_type,
       "call_id" => call_id,
       "output" =>
         "Error: missing tool output for prior call_id=#{call_id} name=#{name}. " <>

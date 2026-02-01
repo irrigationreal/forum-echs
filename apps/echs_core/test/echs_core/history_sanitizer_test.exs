@@ -53,4 +53,27 @@ defmodule EchsCore.HistorySanitizerTest do
 
     assert [%{"call_id" => "fc_1"}] = HistorySanitizer.repair_output_items(history, 1)
   end
+
+  test "repair_output_items/2 restores missing custom tool outputs" do
+    history = [
+      %{
+        "type" => "custom_tool_call",
+        "name" => "custom_tool",
+        "call_id" => "ct_1",
+        "arguments" => "{}"
+      }
+    ]
+
+    assert [
+             %{
+               "type" => "custom_tool_call_output",
+               "call_id" => "ct_1",
+               "output" => output
+             }
+           ] = HistorySanitizer.repair_output_items(history, 2)
+
+    assert output =~ "missing tool output"
+    assert output =~ "call_id=ct_1"
+    assert output =~ "name=custom_tool"
+  end
 end

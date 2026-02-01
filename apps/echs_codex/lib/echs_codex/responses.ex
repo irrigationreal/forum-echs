@@ -215,6 +215,10 @@ defmodule EchsCodex.Responses do
     end
   end
 
+  defp drop_reasoning_payload(body) do
+    Map.delete(body, "reasoning")
+  end
+
   defp build_sse_handler(on_event) do
     fn {:data, data}, {req, resp} ->
       sse_state = Map.get(resp.private, :echs_sse_state, EchsCodex.SSE.new_state())
@@ -248,6 +252,7 @@ defmodule EchsCodex.Responses do
   defp do_stream_request(body, headers, on_event, req_opts, summary_requested, opts) do
     auth_refreshed? = Keyword.get(opts, :auth_refreshed?, false)
     summary_dropped? = Keyword.get(opts, :summary_dropped?, false)
+    payload_dropped? = Keyword.get(opts, :payload_dropped?, false)
     meta = Keyword.get(opts, :meta, %{})
 
     request =
@@ -278,6 +283,7 @@ defmodule EchsCodex.Responses do
               do_stream_request(body, headers, on_event, req_opts, summary_requested,
                 auth_refreshed?: true,
                 summary_dropped?: summary_dropped?,
+                payload_dropped?: payload_dropped?,
                 meta: meta
               )
 
@@ -300,6 +306,21 @@ defmodule EchsCodex.Responses do
             do_stream_request(body, headers, on_event, req_opts, summary_requested,
               auth_refreshed?: auth_refreshed?,
               summary_dropped?: true,
+              payload_dropped?: payload_dropped?,
+              meta: meta
+            )
+
+          summary_dropped? and not payload_dropped? and status in [400, 403] ->
+            Logger.warn(
+              "Codex request rejected (status=#{status}); retrying once without reasoning payload model=#{meta[:model]} items=#{meta[:items]} tools=#{meta[:tools]}"
+            )
+
+            body = drop_reasoning_payload(body)
+
+            do_stream_request(body, headers, on_event, req_opts, summary_requested,
+              auth_refreshed?: auth_refreshed?,
+              summary_dropped?: true,
+              payload_dropped?: true,
               meta: meta
             )
 

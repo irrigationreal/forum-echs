@@ -180,6 +180,8 @@ Supported config keys today:
 
 - `cwd`, `model`, `reasoning`, `instructions`, `toolsets`, `tools`
 
+Reasoning values: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`.
+
 `toolsets` accepts a list of named bundles (e.g. `core`, `codex_forum`). When
 present, ECHS rebuilds the tool list from those bundles before applying any
 `tools` add/remove modifiers.

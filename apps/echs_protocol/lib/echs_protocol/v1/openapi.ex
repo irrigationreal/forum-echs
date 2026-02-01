@@ -389,6 +389,12 @@ defmodule EchsProtocol.V1.OpenAPI do
 
   defp schemas do
     %{
+      ReasoningLevel: %{
+        type: "string",
+        description:
+          "Reasoning effort. 'none' suppresses reasoning deltas; higher levels may yield more summaries.",
+        enum: ["none", "minimal", "low", "medium", "high", "xhigh"]
+      },
       ThreadId: %{type: "string", pattern: "^thr_[0-9a-f]+$"},
       MessageId: %{type: "string"},
       ISO8601: %{type: ["string", "null"], format: "date-time"},
@@ -410,7 +416,7 @@ defmodule EchsProtocol.V1.OpenAPI do
           thread_id: %{"$ref" => "#/components/schemas/ThreadId"},
           cwd: %{type: "string"},
           model: %{type: "string"},
-          reasoning: %{type: "string"},
+          reasoning: %{"$ref" => "#/components/schemas/ReasoningLevel"},
           instructions: %{type: "string"},
           coordination_mode: %{type: "string", enum: ["hierarchical", "blackboard", "peer"]},
           tools: %{
@@ -438,7 +444,7 @@ defmodule EchsProtocol.V1.OpenAPI do
           created_at: %{"$ref" => "#/components/schemas/ISO8601"},
           last_activity_at: %{"$ref" => "#/components/schemas/ISO8601"},
           model: %{type: "string"},
-          reasoning: %{type: "string"},
+          reasoning: %{"$ref" => "#/components/schemas/ReasoningLevel"},
           cwd: %{type: "string"},
           status: %{type: "string", enum: ["idle", "running", "paused", "stored"]},
           current_message_id: %{
@@ -478,7 +484,7 @@ defmodule EchsProtocol.V1.OpenAPI do
           config: %{
             type: "object",
             description:
-              "Config keys: cwd, model, reasoning, instructions, tools. Keys must be strings in payload.",
+              "Config keys: cwd, model, reasoning, instructions, tools. Reasoning values: none|minimal|low|medium|high|xhigh.",
             additionalProperties: %{"$ref" => "#/components/schemas/JSONValue"}
           }
         },
