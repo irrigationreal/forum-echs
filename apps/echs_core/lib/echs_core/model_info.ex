@@ -19,7 +19,10 @@ defmodule EchsCore.ModelInfo do
   def shell_tool_type(model) when is_binary(model) do
     cond do
       String.starts_with?(model, "gpt-5.2-codex") ->
-        :shell_command
+        :exec
+
+      String.starts_with?(model, "gpt-5.2") ->
+        :exec
 
       String.starts_with?(model, "gpt-5.1-codex") ->
         :shell_command
@@ -29,6 +32,9 @@ defmodule EchsCore.ModelInfo do
 
       String.starts_with?(model, "codex-") and not String.contains?(model, "-mini") ->
         :shell_command
+
+      claude_model?(model) ->
+        :exec
 
       String.starts_with?(model, "exp-") ->
         :exec
@@ -92,4 +98,11 @@ defmodule EchsCore.ModelInfo do
   defp codex_shell_command_model?(model) do
     shell_tool_type(model) == :shell_command
   end
+
+  defp claude_model?(model) when is_binary(model) do
+    normalized = model |> String.trim() |> String.downcase()
+    normalized in ["opus", "sonnet", "haiku"] or String.starts_with?(normalized, "claude-")
+  end
+
+  defp claude_model?(_), do: false
 end
