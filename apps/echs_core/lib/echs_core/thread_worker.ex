@@ -72,6 +72,25 @@ defmodule EchsCore.ThreadWorker do
   Network: Unrestricted
   """
 
+  @tools_guidance_marker "<TOOLS_GUIDANCE>"
+
+  @tools_guidance """
+  <TOOLS_GUIDANCE>
+  ## Tool Guide (Generic)
+
+  Use tools when they make the answer more correct, faster, or safer than pure reasoning.
+
+  - **Shell** (`exec_command`/`write_stdin`, or `shell_command` if present): run commands, inspect system state, and verify assumptions. Prefer `exec_command` for interactive or long-running commands; use `shell_command` for short, one-shot commands.
+  - **Files** (`read_file`, `list_dir`, `grep_files`): inspect code and data rather than guessing; use these for discovery and verification.
+  - **Edits** (`apply_patch`): make precise, minimal changes; avoid manual rewriting for large diffs.
+  - **Images** (`view_image`): load local images when visual context is required.
+  - **Sub-agents** (`spawn_agent`, `send_input`, `wait`, `close_agent`): parallelize research and analysis. Keep writes/patches serialized in the parent.
+  - **Coordination** (`blackboard_write`, `blackboard_read`): share state between sub-agents; use for summaries and decisions.
+
+  When in doubt, verify with tools before answering.
+  </TOOLS_GUIDANCE>
+  """
+
   @claude_instructions_marker "<CLAUDE_INSTRUCTIONS>"
 
   defstruct [
@@ -3073,12 +3092,26 @@ defmodule EchsCore.ThreadWorker do
   end
 
   defp build_instructions(nil, cwd) do
-    String.replace(@default_system_prompt, "{{cwd}}", cwd)
+    @default_system_prompt
+    |> String.replace("{{cwd}}", cwd)
+    |> inject_tools_guidance()
   end
 
   defp build_instructions(custom, cwd) do
-    String.replace(custom, "{{cwd}}", cwd)
+    custom
+    |> String.replace("{{cwd}}", cwd)
+    |> inject_tools_guidance()
   end
+
+  defp inject_tools_guidance(instructions) when is_binary(instructions) do
+    if String.contains?(instructions, @tools_guidance_marker) do
+      instructions
+    else
+      instructions <> "\n\n" <> String.trim(@tools_guidance)
+    end
+  end
+
+  defp inject_tools_guidance(other), do: other
 
   defp core_tools(model) do
     shell_tools =
