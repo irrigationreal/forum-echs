@@ -57,4 +57,21 @@ defmodule EchsCore.Tools.ExecTest do
     assert :ok = Exec.kill_session(exec, session_id)
     assert {:error, _} = Exec.write_stdin(exec, session_id: session_id, chars: "")
   end
+
+  test "returns quickly when process exits before yield_time", %{exec: exec} do
+    {:ok, result} =
+      Exec.exec_command(exec,
+        cmd: "true",
+        shell: "/bin/bash",
+        login: false,
+        yield_time_ms: 5_000
+      )
+
+    [_, wall_time] =
+      Regex.run(~r/Wall time: ([0-9.]+) seconds/, result) ||
+        flunk("expected wall time in output:\n#{result}")
+
+    wall_time = String.to_float(wall_time)
+    assert wall_time < 1.0
+  end
 end

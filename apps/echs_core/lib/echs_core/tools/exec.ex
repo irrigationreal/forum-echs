@@ -368,7 +368,7 @@ defmodule EchsCore.Tools.Exec do
   end
 
   @impl true
-  def handle_info({'DOWN', os_pid, _process, _pid, reason}, state) when is_integer(os_pid) do
+  def handle_info({:DOWN, os_pid, _process, _pid, reason}, state) when is_integer(os_pid) do
     case Map.get(state.os_pid_index, os_pid) do
       nil ->
         {:noreply, state}
@@ -470,8 +470,10 @@ defmodule EchsCore.Tools.Exec do
     acc = Enum.reverse(chunks)
 
     exit_code = session.exit_code
+    exit_code = maybe_infer_exit_code(exit_code, os_pid)
     exit_seen = not is_nil(exit_code)
-    exit_grace_deadline = if exit_seen, do: System.monotonic_time(:millisecond) + @post_exit_grace_ms, else: nil
+    exit_grace_deadline =
+      if exit_seen, do: System.monotonic_time(:millisecond) + @post_exit_grace_ms, else: nil
 
     {acc, exit_code} =
       collect_output_loop(
@@ -483,7 +485,6 @@ defmodule EchsCore.Tools.Exec do
         exit_grace_deadline
       )
 
-    exit_code = maybe_infer_exit_code(exit_code, os_pid)
     output = acc |> Enum.reverse() |> IO.iodata_to_binary()
     {output, exit_code, %{session | buffer: buffer, exit_code: exit_code}}
   end
@@ -500,6 +501,19 @@ defmodule EchsCore.Tools.Exec do
         {acc, exit_code}
 
       true ->
+        {exit_code, exit_seen, exit_grace_deadline} =
+          if exit_code == nil do
+            case maybe_infer_exit_code(nil, os_pid) do
+              nil ->
+                {exit_code, exit_seen, exit_grace_deadline}
+
+              inferred ->
+                {inferred, true, System.monotonic_time(:millisecond) + @post_exit_grace_ms}
+            end
+          else
+            {exit_code, exit_seen, exit_grace_deadline}
+          end
+
         timeout =
           if exit_seen and exit_grace_deadline != nil do
             min(remaining, max(exit_grace_deadline - now, 0))
@@ -518,7 +532,7 @@ defmodule EchsCore.Tools.Exec do
             new_deadline = if exit_seen, do: System.monotonic_time(:millisecond) + @post_exit_grace_ms, else: exit_grace_deadline
             collect_output_loop(os_pid, new_acc, deadline, exit_code, exit_seen, new_deadline)
 
-          {'DOWN', ^os_pid, _process, _pid, reason} ->
+          {:DOWN, ^os_pid, _process, _pid, reason} ->
             code = reason_to_exit_code(reason)
             new_deadline = System.monotonic_time(:millisecond) + @post_exit_grace_ms
             collect_output_loop(os_pid, acc, deadline, code, true, new_deadline)

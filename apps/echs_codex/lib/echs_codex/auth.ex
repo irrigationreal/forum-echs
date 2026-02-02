@@ -9,15 +9,25 @@ defmodule EchsCodex.Auth do
   @auth_agent __MODULE__
 
   def start_link(opts \\ []) do
-    auth_path = Keyword.get(opts, :auth_path, default_auth_path())
+    auth_path = Keyword.get(opts, :auth_path, auth_path_from_env() || default_auth_path())
 
-    case load_auth(auth_path) do
+    case auth_from_env() do
       {:ok, auth} ->
-        Agent.start_link(fn -> %{auth: auth, path: auth_path} end, name: @auth_agent)
+        Agent.start_link(fn -> %{auth: auth, path: auth_path, source: :env} end, name: @auth_agent)
 
-      {:error, _reason} ->
-        # Start anyway with nil auth - user can refresh
-        Agent.start_link(fn -> %{auth: nil, path: auth_path} end, name: @auth_agent)
+      :error ->
+        case load_auth(auth_path) do
+          {:ok, auth} ->
+            Agent.start_link(fn -> %{auth: auth, path: auth_path, source: :file} end,
+              name: @auth_agent
+            )
+
+          {:error, _reason} ->
+            # Start anyway with nil auth - user can refresh
+            Agent.start_link(fn -> %{auth: nil, path: auth_path, source: :file} end,
+              name: @auth_agent
+            )
+        end
     end
   end
 
@@ -36,6 +46,10 @@ defmodule EchsCodex.Auth do
     end
   end
 
+  def auth_source do
+    Agent.get(@auth_agent, fn %{source: source} -> source end)
+  end
+
   def get_headers do
     auth = get_auth()
 
@@ -48,6 +62,9 @@ defmodule EchsCodex.Auth do
   end
 
   def refresh_auth do
+    if auth_source() == :env do
+      {:error, "auth refresh not supported when using ECHS_CODEX_ACCESS_TOKEN"}
+    else
     # Run `codex login status` to refresh the token
     case System.cmd("codex", ["login", "status"], stderr_to_stdout: true) do
       {_, 0} ->
@@ -65,6 +82,7 @@ defmodule EchsCodex.Auth do
 
       {output, code} ->
         {:error, "codex login status failed (#{code}): #{output}"}
+    end
     end
   end
 
@@ -93,6 +111,30 @@ defmodule EchsCodex.Auth do
 
   defp default_auth_path do
     Path.join([System.get_env("HOME"), ".codex", "auth.json"])
+  end
+
+  defp auth_path_from_env do
+    env = System.get_env("ECHS_CODEX_AUTH_PATH") || ""
+    env = String.trim(env)
+    if env == "", do: nil, else: env
+  end
+
+  defp auth_from_env do
+    access = System.get_env("ECHS_CODEX_ACCESS_TOKEN") || ""
+    access = String.trim(access)
+
+    if access == "" do
+      :error
+    else
+      account_id = System.get_env("ECHS_CODEX_ACCOUNT_ID") || ""
+      account_id = String.trim(account_id)
+
+      if account_id == "" do
+        raise "ECHS_CODEX_ACCOUNT_ID must be set when ECHS_CODEX_ACCESS_TOKEN is provided."
+      end
+
+      {:ok, %{access_token: access, refresh_token: nil, id_token: nil, account_id: account_id}}
+    end
   end
 
   defp build_auth(json) do

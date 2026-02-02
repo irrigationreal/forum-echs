@@ -459,14 +459,22 @@ items = [
 
 ## Auth / Codex Client (echs_codex)
 
-ECHS relies on the system `codex` CLI to provision/refresh credentials.
+By default, ECHS relies on the system `codex` CLI to provision/refresh credentials.
 
 - Auth file: `~/.codex/auth.json`
 - Initialize or refresh: `codex login`
 - Refresh path used by the code: `codex login status`
 
-The HTTP client uses streaming SSE against a Responses endpoint. The base URLs
-are currently hard-coded in `apps/echs_codex/lib/echs_codex/responses.ex`.
+You can override auth and endpoints via environment variables:
+
+- `ECHS_CODEX_AUTH_PATH` - custom path to the auth JSON file
+- `ECHS_CODEX_ACCESS_TOKEN` - direct access token (bypasses `~/.codex/auth.json`)
+- `ECHS_CODEX_ACCOUNT_ID` - required when `ECHS_CODEX_ACCESS_TOKEN` is set
+- `ECHS_CODEX_BASE_URL` - override responses endpoint base URL
+- `ECHS_CODEX_COMPACT_URL` - override compact endpoint URL
+
+Note: if you use `ECHS_CODEX_ACCESS_TOKEN`, token refresh via `codex login status`
+is disabled.
 
 ## Development
 

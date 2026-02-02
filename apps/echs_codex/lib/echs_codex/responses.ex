@@ -6,8 +6,8 @@ defmodule EchsCodex.Responses do
 
   require Logger
 
-  @base_url "https://codex.ppflix.net/v1/responses"
-  @compact_url "https://codex.ppflix.net/v1/responses/compact"
+  @default_base_url "https://codex.ppflix.net/v1/responses"
+  @default_compact_url "https://codex.ppflix.net/v1/responses/compact"
 
   @default_model "gpt-5.2-codex"
   @max_error_body_bytes 50_000
@@ -54,7 +54,7 @@ defmodule EchsCodex.Responses do
     headers = auth_headers()
 
     Logger.debug(fn ->
-      "Codex request to #{@base_url} model=#{model} items=#{length(input)} tools=#{length(tools)}"
+      "Codex request to #{base_url()} model=#{model} items=#{length(input)} tools=#{length(tools)}"
     end)
 
     meta = %{model: model, items: length(input), tools: length(tools)}
@@ -242,7 +242,8 @@ defmodule EchsCodex.Responses do
   defp auth_headers do
     auth = EchsCodex.Auth.get_auth()
 
-    if EchsCodex.Auth.token_expired?(auth.access_token) do
+    if EchsCodex.Auth.auth_source() == :file and
+         EchsCodex.Auth.token_expired?(auth.access_token) do
       _ = EchsCodex.Auth.refresh_auth()
     end
 
@@ -257,7 +258,7 @@ defmodule EchsCodex.Responses do
 
     request =
       Req.new(
-        url: @base_url,
+        url: base_url(),
         method: :post,
         headers: headers,
         json: body,
@@ -343,7 +344,7 @@ defmodule EchsCodex.Responses do
 
     request =
       Req.new(
-        url: @compact_url,
+        url: compact_url(),
         method: :post,
         headers: headers,
         json: body
@@ -381,6 +382,18 @@ defmodule EchsCodex.Responses do
       {:error, _} = error ->
         error
     end
+  end
+
+  defp base_url do
+    env = System.get_env("ECHS_CODEX_BASE_URL") || ""
+    env = String.trim(env)
+    if env == "", do: @default_base_url, else: env
+  end
+
+  defp compact_url do
+    env = System.get_env("ECHS_CODEX_COMPACT_URL") || ""
+    env = String.trim(env)
+    if env == "", do: @default_compact_url, else: env
   end
 
   defp maybe_append_error_body(%{status: 200} = resp, _chunk), do: resp

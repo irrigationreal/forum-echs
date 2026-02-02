@@ -5,8 +5,19 @@ streaming against the responses endpoints.
 
 ## Auth
 
-This client reads tokens from `~/.codex/auth.json`. Run `codex login` to
-initialize or refresh the file.
+By default, this client reads tokens from `~/.codex/auth.json`. Run `codex login`
+to initialize or refresh the file.
+
+Overrides:
+
+- `ECHS_CODEX_AUTH_PATH` - custom path to the auth JSON file
+- `ECHS_CODEX_ACCESS_TOKEN` - direct access token (bypasses `~/.codex/auth.json`)
+- `ECHS_CODEX_ACCOUNT_ID` - required when `ECHS_CODEX_ACCESS_TOKEN` is set
+- `ECHS_CODEX_BASE_URL` - override responses endpoint base URL
+- `ECHS_CODEX_COMPACT_URL` - override compact endpoint URL
+
+Note: if you use `ECHS_CODEX_ACCESS_TOKEN`, token refresh via `codex login status`
+is disabled.
 
 ## Usage
 

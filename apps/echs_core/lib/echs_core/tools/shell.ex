@@ -292,7 +292,7 @@ defmodule EchsCore.Tools.Shell do
               new_deadline
             )
 
-          {'DOWN', ^os_pid, _process, _pid, reason} ->
+          {:DOWN, ^os_pid, _process, _pid, reason} ->
             code = reason_to_exit_code(reason)
             new_grace = System.monotonic_time(:millisecond) + @post_exit_grace_ms
             loop_collect(os_pid, out_acc, err_acc, deadline, code, timed_out, new_grace)
