@@ -32,7 +32,14 @@ defmodule EchsServer.Application do
       )
     end
 
-    Supervisor.start_link(children, opts)
+    case Supervisor.start_link(children, opts) do
+      {:ok, pid} = result ->
+        _ = EchsServer.AutoResume.start()
+        result
+
+      other ->
+        other
+    end
   end
 
   defp bandit_options do

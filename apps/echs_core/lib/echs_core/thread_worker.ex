@@ -102,6 +102,7 @@ defmodule EchsCore.ThreadWorker do
     :reply_to,
     :pending_interrupts,
     :queued_turns,
+    :resume_turns,
     :steer_queue,
     :tool_handlers,
     :current_slot_ref,
@@ -176,6 +177,7 @@ defmodule EchsCore.ThreadWorker do
           reply_to: GenServer.from() | nil,
           pending_interrupts: [GenServer.from()],
           queued_turns: [queued_turn()],
+          resume_turns: [queued_turn()],
           steer_queue: [steer_turn()],
           tool_handlers: %{optional(String.t()) => tool_handler()},
           current_slot_ref: reference() | nil,
@@ -440,6 +442,7 @@ defmodule EchsCore.ThreadWorker do
       reply_to: nil,
       pending_interrupts: [],
       queued_turns: queued_turns,
+      resume_turns: Keyword.get(opts, :resume_turns, []),
       steer_queue: steer_queue,
       tool_handlers: %{},
       current_slot_ref: nil,
@@ -452,7 +455,7 @@ defmodule EchsCore.ThreadWorker do
 
     _ = persist_thread(state)
 
-    if state.queued_turns != [] or state.steer_queue != [] do
+    if state.resume_turns != [] or state.queued_turns != [] or state.steer_queue != [] do
       send(self(), :auto_start_queued)
     end
 
@@ -1599,6 +1602,9 @@ defmodule EchsCore.ThreadWorker do
       state.stream_pid != nil ->
         state
 
+      state.resume_turns != [] ->
+        start_resume_turn(state)
+
       state.steer_queue != [] ->
         start_steer_turn(state)
 
@@ -1619,6 +1625,19 @@ defmodule EchsCore.ThreadWorker do
       |> begin_turn(next.message_id)
       |> apply_turn_config(next.opts)
       |> add_user_message(next.content)
+
+    broadcast(state, :turn_started, %{thread_id: state.thread_id})
+    start_stream(state)
+  end
+
+  defp start_resume_turn(state) do
+    [next | rest] = state.resume_turns
+    state = %{state | resume_turns: rest, reply_to: next.from}
+
+    state =
+      state
+      |> resume_turn(next.message_id)
+      |> apply_turn_config(next.opts)
 
     broadcast(state, :turn_started, %{thread_id: state.thread_id})
     start_stream(state)
@@ -2013,6 +2032,29 @@ defmodule EchsCore.ThreadWorker do
     end
   end
 
+  defp maybe_pad_tool_timeout_ms(timeout_ms, name) when is_integer(timeout_ms) do
+    case name do
+      "shell" -> timeout_ms + tool_timeout_padding_ms()
+      "shell_command" -> timeout_ms + tool_timeout_padding_ms()
+      _ -> timeout_ms
+    end
+  end
+
+  defp maybe_pad_tool_timeout_ms(timeout_ms, _name), do: timeout_ms
+
+  defp tool_timeout_padding_ms do
+    case System.get_env("ECHS_TOOL_TIMEOUT_PADDING_MS") do
+      nil ->
+        2_000
+
+      value ->
+        case Integer.parse(value) do
+          {int, _} when int >= 0 -> int
+          _ -> 2_000
+        end
+    end
+  end
+
   defp log_tool_event(:start, item) do
     if tool_log_enabled?() do
       Logger.info("tool.start #{summarize_tool_item(item)}")
@@ -2118,7 +2160,10 @@ defmodule EchsCore.ThreadWorker do
 
           case decode_tool_args(item["arguments"]) do
             {:ok, args} ->
-              timeout_ms = Map.get(args, "timeout_ms", tool_timeout_ms())
+              timeout_ms =
+                args
+                |> Map.get("timeout_ms", tool_timeout_ms())
+                |> maybe_pad_tool_timeout_ms(name)
 
               run_tool_with_timeout(
                 fn -> execute_named_tool(state, name, args) end,
@@ -2130,7 +2175,10 @@ defmodule EchsCore.ThreadWorker do
             {:error, reason} ->
               if name == "apply_patch" and is_binary(item["arguments"]) do
                 args = %{"input" => item["arguments"]}
-                timeout_ms = Map.get(args, "timeout_ms", tool_timeout_ms())
+                timeout_ms =
+                  args
+                  |> Map.get("timeout_ms", tool_timeout_ms())
+                  |> maybe_pad_tool_timeout_ms(name)
 
                 run_tool_with_timeout(
                   fn -> execute_named_tool(state, name, args) end,
@@ -2149,7 +2197,10 @@ defmodule EchsCore.ThreadWorker do
 
           if name == "apply_patch" and is_binary(input) do
             args = %{"input" => input}
-            timeout_ms = Map.get(args, "timeout_ms", tool_timeout_ms())
+            timeout_ms =
+              args
+              |> Map.get("timeout_ms", tool_timeout_ms())
+              |> maybe_pad_tool_timeout_ms(name)
 
             run_tool_with_timeout(
               fn -> execute_named_tool(state, name, args) end,
@@ -2226,8 +2277,17 @@ defmodule EchsCore.ThreadWorker do
 
         case maybe_intercept_apply_patch(state, "shell_command", argv, cwd) do
           :not_apply_patch ->
-            {result, next_state} = execute_shell_command(state, command, cwd, timeout_ms, login)
-            {result, next_state}
+            result =
+              Tools.Shell.execute_command(command,
+                cwd: cwd,
+                timeout_ms: timeout_ms,
+                login: login,
+                shell: shell,
+                snapshot_path: state.shell_snapshot_path,
+                truncation_policy: ModelInfo.truncation_policy(state.model)
+              )
+
+            {result, state}
 
           {:error, reason} ->
             {{:error, reason}, state}
@@ -2310,212 +2370,6 @@ defmodule EchsCore.ThreadWorker do
 
   defp unwrap_tool_result(result, fallback_state), do: {result, fallback_state}
 
-  defp execute_shell_command(state, command, cwd, timeout_ms, login) do
-    {session_id, state} = ensure_shell_session(state, cwd, timeout_ms, login)
-
-    if is_binary(session_id) do
-      {output, exit_code, duration_ms, timed_out, session_closed?} =
-        run_shell_session_command(
-          session_id,
-          command,
-          cwd,
-          state.shell_session_cwd,
-          timeout_ms
-        )
-
-      truncation_policy = ModelInfo.truncation_policy(state.model)
-
-      formatted =
-        Tools.Shell.format_freeform_output(
-          output,
-          exit_code,
-          duration_ms,
-          timed_out,
-          truncation_policy
-        )
-
-      next_state =
-        if session_closed? or timed_out do
-          %{state | shell_session_id: nil, shell_session_login: nil}
-        else
-          %{state | shell_session_cwd: cwd}
-        end
-
-      {formatted, next_state}
-    else
-      fallback =
-        Tools.Shell.execute_command(command,
-          cwd: cwd,
-          timeout_ms: timeout_ms,
-          login: login,
-          shell: state.shell_path || System.get_env("SHELL") || "/bin/bash",
-          snapshot_path: state.shell_snapshot_path,
-          truncation_policy: ModelInfo.truncation_policy(state.model)
-        )
-
-      {fallback, state}
-    end
-  end
-
-  defp run_shell_session_command(session_id, command, cwd, session_cwd, timeout_ms) do
-    start_ms = System.monotonic_time(:millisecond)
-    token = "__ECHS_DONE__#{random_token()}__"
-    prefix = if session_cwd != cwd, do: "cd #{escape_shell_arg(cwd)}\n", else: ""
-
-    payload =
-      prefix <>
-        command <>
-        "\n" <>
-        "printf '\\n#{token}%s\\n' $?\n"
-
-    deadline = start_ms + timeout_ms
-
-    {buffer, exit_code, session_closed?} =
-      read_shell_until_token(session_id, payload, token, deadline, "")
-
-    duration_ms = System.monotonic_time(:millisecond) - start_ms
-    timed_out = exit_code == :timeout
-
-    exit_code =
-      case exit_code do
-        :timeout -> 192
-        other -> other
-      end
-
-    {buffer, exit_code, duration_ms, timed_out, session_closed?}
-  end
-
-  defp read_shell_until_token(session_id, payload, token, deadline, buffer) do
-    now = System.monotonic_time(:millisecond)
-
-    if now >= deadline do
-      _ = Tools.Exec.kill_session(session_id)
-      {buffer, :timeout, true}
-    else
-      yield_time_ms = min(1_000, max(deadline - now, 50))
-
-      result =
-        Tools.Exec.write_stdin(
-          session_id: session_id,
-          chars: payload,
-          yield_time_ms: yield_time_ms,
-          max_output_tokens: 1_000_000
-        )
-
-      case result do
-        {:ok, output} when is_binary(output) ->
-          output_chunk = extract_exec_output(output)
-          session_closed? = extract_session_id(output) == nil
-          exit_code = extract_exec_exit_code(output)
-          buffer = buffer <> output_chunk
-
-          case split_on_token(buffer, token) do
-            {:ok, done_output, code} ->
-              {done_output, code, session_closed?}
-
-            :not_found ->
-              if session_closed? do
-                {buffer, exit_code || -1, true}
-              else
-                read_shell_until_token(session_id, "", token, deadline, buffer)
-              end
-          end
-
-        {:error, reason} ->
-          {"execution error: #{reason}\n" <> buffer, -1, true}
-
-        _ ->
-          {buffer, -1, true}
-      end
-    end
-  end
-
-  defp split_on_token(buffer, token) do
-    case String.split(buffer, token, parts: 2) do
-      [before, after_token] ->
-        case Regex.run(~r/^(\d+)/, after_token) do
-          [_, code] -> {:ok, before, String.to_integer(code)}
-          _ -> {:ok, before, -1}
-        end
-
-      _ ->
-        :not_found
-    end
-  end
-
-  defp ensure_shell_session(state, cwd, timeout_ms, login) do
-    cond do
-      is_binary(state.shell_session_id) and state.shell_session_login == login ->
-        {state.shell_session_id, state}
-
-      is_binary(state.shell_session_id) ->
-        _ = EchsCore.Tools.Exec.kill_session(state.shell_session_id)
-
-        start_shell_session(
-          %{state | shell_session_id: nil, shell_session_login: nil},
-          cwd,
-          timeout_ms,
-          login
-        )
-
-      true ->
-        start_shell_session(state, cwd, timeout_ms, login)
-    end
-  end
-
-  defp start_shell_session(state, cwd, timeout_ms, login) do
-    shell = state.shell_path || System.get_env("SHELL") || "/bin/bash"
-    snapshot_path = state.shell_snapshot_path
-
-    shell_cmd =
-      if login and is_binary(snapshot_path) and File.exists?(snapshot_path) do
-        "exec #{shell}"
-      else
-        "exec #{shell}#{login_shell_flag(shell, login)}"
-      end
-
-    case Tools.Exec.exec_command(
-           cmd: shell_cmd,
-           cwd: cwd,
-           login: false,
-           tty: true,
-           yield_time_ms: min(timeout_ms, 2_000),
-           max_output_tokens: 5_000
-         ) do
-      {:ok, output} when is_binary(output) ->
-        session_id = extract_session_id(output)
-
-        if session_id == nil do
-          {nil, state}
-        else
-          snapshot_setup =
-            if login and is_binary(snapshot_path) and File.exists?(snapshot_path) do
-              ". #{escape_shell_arg(snapshot_path)}\n"
-            else
-              ""
-            end
-
-          _ =
-            Tools.Exec.write_stdin(
-              session_id: session_id,
-              chars: "stty -echo\nexport PS1=\nexport PROMPT_COMMAND=\n" <> snapshot_setup,
-              yield_time_ms: 1_000,
-              max_output_tokens: 1_000_000
-            )
-
-          {to_string(session_id),
-           %{
-             state
-             | shell_session_id: to_string(session_id),
-               shell_session_cwd: cwd,
-               shell_session_login: login
-           }}
-        end
-
-      {:error, _reason} ->
-        {nil, state}
-    end
-  end
 
   defp escape_shell_arg(value) when is_binary(value) do
     "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
@@ -3436,6 +3290,38 @@ defmodule EchsCore.ThreadWorker do
       |> Map.put(:current_message_id, message_id)
       |> Map.put(:current_turn_started_at_ms, now)
       |> touch()
+
+    _ = persist_message(state, message_id)
+    state
+  end
+
+  defp resume_turn(state, message_id) when is_binary(message_id) and message_id != "" do
+    now = now_ms()
+
+    meta =
+      state.message_log
+      |> Map.get(message_id, %{message_id: message_id})
+
+    history_start = meta.history_start || length(state.history_items)
+
+    meta =
+      meta
+      |> Map.put_new(:enqueued_at_ms, now)
+      |> Map.put_new(:started_at_ms, now)
+      |> Map.put(:status, :running)
+      |> Map.put(:history_start, history_start)
+      |> Map.put(:history_end, nil)
+      |> Map.put(:error, nil)
+
+    state =
+      state
+      |> remember_message_id(message_id)
+      |> touch()
+      |> Map.put(:current_message_id, message_id)
+      |> Map.put(:current_turn_started_at_ms, now)
+
+    state =
+      %{state | message_log: Map.put(state.message_log, message_id, normalize_message_meta(meta))}
 
     _ = persist_message(state, message_id)
     state

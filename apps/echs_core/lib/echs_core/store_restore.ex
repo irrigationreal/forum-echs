@@ -24,15 +24,19 @@ defmodule EchsCore.StoreRestore do
     with :ok <- ensure_store_available(),
          {:ok, thread} <- EchsStore.get_thread(thread_id),
          {:ok, history_items} <- EchsStore.load_all(thread_id) do
-      # A daemon restart can leave messages stuck in "running". Mark those as
-      # error so status queries stay honest. We do *not* mark queued messages
-      # because those can be replayed.
-      _ = EchsStore.mark_incomplete_messages(thread_id, include_queued: false)
+      auto_resume? = auto_resume_enabled?()
+
+      if not auto_resume? do
+        # A daemon restart can leave messages stuck in "running". Mark those as
+        # error so status queries stay honest. We do *not* mark queued messages
+        # because those can be replayed.
+        _ = EchsStore.mark_incomplete_messages(thread_id, include_queued: false)
+      end
 
       messages = EchsStore.list_messages(thread_id, limit: message_limit)
 
       {message_ids, message_log} = build_message_cache(messages)
-      {queued_turns, steer_queue} = build_queues(messages)
+      {resume_turns, queued_turns, steer_queue} = build_queues(messages, auto_resume?)
 
       tools = decode_tools(thread.tools_json)
 
@@ -51,6 +55,7 @@ defmodule EchsCore.StoreRestore do
         message_ids: message_ids,
         message_log: message_log,
         queued_turns: queued_turns,
+        resume_turns: resume_turns,
         steer_queue: steer_queue
       ]
 
@@ -141,45 +146,75 @@ defmodule EchsCore.StoreRestore do
 
   defp parse_status(_), do: :queued
 
-  defp build_queues(messages) do
-    Enum.reduce(messages, {[], []}, fn msg, {queued, steer} ->
-      if msg.status == "queued" and is_binary(msg.request_json) and msg.request_json != "" do
-        case decode_request_json(msg.request_json) do
-          {:ok, %{content: content, configure: configure, mode: mode}} ->
-            opts = [configure: configure]
+  defp build_queues(messages, auto_resume?) do
+    Enum.reduce(messages, {[], [], []}, fn msg, {resume, queued, steer} ->
+      cond do
+        auto_resume? and msg.status == "running" and is_binary(msg.request_json) and
+            msg.request_json != "" ->
+          case decode_request_json(msg.request_json) do
+            {:ok, %{content: content, configure: configure}} ->
+              opts = [configure: configure]
+              enqueued_at_ms = msg.started_at_ms || msg.enqueued_at_ms || System.system_time(:millisecond)
 
-            case mode do
-              :steer ->
-                turn = %{
-                  from: nil,
-                  content: content,
-                  opts: Keyword.put(opts, :mode, :steer),
-                  message_id: msg.message_id,
-                  enqueued_at_ms: msg.enqueued_at_ms || System.system_time(:millisecond),
-                  preserve_reply?: false
-                }
+              turn = %{
+                from: nil,
+                content: content,
+                opts: opts,
+                message_id: msg.message_id,
+                enqueued_at_ms: enqueued_at_ms
+              }
 
-                {queued, steer ++ [turn]}
+              {resume ++ [turn], queued, steer}
 
-              :queue ->
-                turn = %{
-                  from: nil,
-                  content: content,
-                  opts: Keyword.put(opts, :mode, :queue),
-                  message_id: msg.message_id,
-                  enqueued_at_ms: msg.enqueued_at_ms || System.system_time(:millisecond)
-                }
+            _ ->
+              {resume, queued, steer}
+          end
 
-                {queued ++ [turn], steer}
-            end
+        msg.status == "queued" and is_binary(msg.request_json) and msg.request_json != "" ->
+          case decode_request_json(msg.request_json) do
+            {:ok, %{content: content, configure: configure, mode: mode}} ->
+              opts = [configure: configure]
 
-          _ ->
-            {queued, steer}
-        end
-      else
-        {queued, steer}
+              case mode do
+                :steer ->
+                  turn = %{
+                    from: nil,
+                    content: content,
+                    opts: Keyword.put(opts, :mode, :steer),
+                    message_id: msg.message_id,
+                    enqueued_at_ms: msg.enqueued_at_ms || System.system_time(:millisecond),
+                    preserve_reply?: false
+                  }
+
+                  {resume, queued, steer ++ [turn]}
+
+                :queue ->
+                  turn = %{
+                    from: nil,
+                    content: content,
+                    opts: Keyword.put(opts, :mode, :queue),
+                    message_id: msg.message_id,
+                    enqueued_at_ms: msg.enqueued_at_ms || System.system_time(:millisecond)
+                  }
+
+                  {resume, queued ++ [turn], steer}
+              end
+
+            _ ->
+              {resume, queued, steer}
+          end
+
+        true ->
+          {resume, queued, steer}
       end
     end)
+  end
+
+  defp auto_resume_enabled? do
+    case System.get_env("ECHS_AUTO_RESUME") do
+      nil -> true
+      value -> value in ["1", "true", "yes", "on"]
+    end
   end
 
   defp decode_request_json(json) when is_binary(json) do
