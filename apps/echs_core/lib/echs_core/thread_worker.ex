@@ -2679,7 +2679,7 @@ defmodule EchsCore.ThreadWorker do
   end
 
   defp exec_command(state, args) do
-    cmd = args["cmd"]
+    cmd = args["cmd"] || args["command"]
     cwd = args["workdir"] || state.cwd
     shell = args["shell"] || System.get_env("SHELL") || "/bin/bash"
     login = Map.get(args, "login", true)
@@ -2687,25 +2687,29 @@ defmodule EchsCore.ThreadWorker do
     yield_time_ms = Map.get(args, "yield_time_ms", 10_000)
     max_tokens = Map.get(args, "max_output_tokens", 10_000)
 
-    argv = Tools.Exec.command_args(shell, cmd, login)
+    if is_binary(cmd) and cmd != "" do
+      argv = Tools.Exec.command_args(shell, cmd, login)
 
-    case maybe_intercept_apply_patch(state, "exec_command", argv, cwd) do
-      :not_apply_patch ->
-        Tools.Exec.exec_command(
-          cmd: cmd,
-          cwd: cwd,
-          shell: shell,
-          login: login,
-          tty: tty,
-          yield_time_ms: yield_time_ms,
-          max_output_tokens: max_tokens
-        )
+      case maybe_intercept_apply_patch(state, "exec_command", argv, cwd) do
+        :not_apply_patch ->
+          Tools.Exec.exec_command(
+            cmd: cmd,
+            cwd: cwd,
+            shell: shell,
+            login: login,
+            tty: tty,
+            yield_time_ms: yield_time_ms,
+            max_output_tokens: max_tokens
+          )
 
-      {:error, reason} ->
-        {:error, reason}
+        {:error, reason} ->
+          {:error, reason}
 
-      other ->
-        other
+        other ->
+          other
+      end
+    else
+      {:error, "exec_command requires cmd (or command)"}
     end
   end
 
