@@ -2153,47 +2153,33 @@ defmodule EchsCore.ThreadWorker do
     log_tool_event(:start, item)
 
     result =
-      case item["type"] do
-        "local_shell_call" ->
-          command = get_in(item, ["action", "command"]) || []
-          cwd = get_in(item, ["action", "working_directory"]) || state.cwd
-          timeout_ms = get_in(item, ["action", "timeout_ms"]) || tool_timeout_ms()
+      try do
+        case item["type"] do
+          "local_shell_call" ->
+            command = get_in(item, ["action", "command"]) || []
+            cwd = get_in(item, ["action", "working_directory"]) || state.cwd
+            timeout_ms = get_in(item, ["action", "timeout_ms"]) || tool_timeout_ms()
 
-          case command do
-            [_ | _] ->
-              result =
-                run_tool_with_timeout(
-                  fn -> Tools.Shell.execute_array(command, cwd: cwd, timeout_ms: timeout_ms) end,
-                  timeout_ms,
-                  "local_shell_call"
-                )
+            case command do
+              [_ | _] ->
+                result =
+                  run_tool_with_timeout(
+                    fn -> Tools.Shell.execute_array(command, cwd: cwd, timeout_ms: timeout_ms) end,
+                    timeout_ms,
+                    "local_shell_call"
+                  )
 
-              {result, state}
+                {result, state}
 
-            [] ->
-              {{:error, "unsupported payload for shell handler: local_shell"}, state}
-          end
+              [] ->
+                {{:error, "unsupported payload for shell handler: local_shell"}, state}
+            end
 
-        "function_call" ->
-          name = item["name"]
+          "function_call" ->
+            name = item["name"]
 
-          case decode_tool_args(item["arguments"]) do
-            {:ok, args} ->
-              timeout_ms =
-                args
-                |> Map.get("timeout_ms", tool_timeout_ms())
-                |> maybe_pad_tool_timeout_ms(name)
-
-              run_tool_with_timeout(
-                fn -> execute_named_tool(state, name, args) end,
-                timeout_ms,
-                "tool #{name}"
-              )
-              |> unwrap_tool_result(state)
-
-            {:error, reason} ->
-              if name == "apply_patch" and is_binary(item["arguments"]) do
-                args = %{"input" => item["arguments"]}
+            case decode_tool_args(item["arguments"]) do
+              {:ok, args} ->
                 timeout_ms =
                   args
                   |> Map.get("timeout_ms", tool_timeout_ms())
@@ -2205,40 +2191,71 @@ defmodule EchsCore.ThreadWorker do
                   "tool #{name}"
                 )
                 |> unwrap_tool_result(state)
-              else
-                {{:error, reason}, state}
-              end
-          end
 
-        "custom_tool_call" ->
-          name = item["name"]
-          input = item["input"] || item["arguments"]
+              {:error, reason} ->
+                if name == "apply_patch" and is_binary(item["arguments"]) do
+                  args = %{"input" => item["arguments"]}
+                  timeout_ms =
+                    args
+                    |> Map.get("timeout_ms", tool_timeout_ms())
+                    |> maybe_pad_tool_timeout_ms(name)
 
-          if name == "apply_patch" and is_binary(input) do
-            args = %{"input" => input}
-            timeout_ms =
-              args
-              |> Map.get("timeout_ms", tool_timeout_ms())
-              |> maybe_pad_tool_timeout_ms(name)
+                  run_tool_with_timeout(
+                    fn -> execute_named_tool(state, name, args) end,
+                    timeout_ms,
+                    "tool #{name}"
+                  )
+                  |> unwrap_tool_result(state)
+                else
+                  {{:error, reason}, state}
+                end
+            end
 
-            run_tool_with_timeout(
-              fn -> execute_named_tool(state, name, args) end,
-              timeout_ms,
-              "tool #{name}"
-            )
-            |> unwrap_tool_result(state)
-          else
-            {{:error, "unsupported custom tool call: #{name}"}, state}
-          end
+          "custom_tool_call" ->
+            name = item["name"]
+            input = item["input"] || item["arguments"]
 
-        _ ->
-          {{:error, "Unknown item type: #{item["type"]}"}, state}
+            if name == "apply_patch" and is_binary(input) do
+              args = %{"input" => input}
+              timeout_ms =
+                args
+                |> Map.get("timeout_ms", tool_timeout_ms())
+                |> maybe_pad_tool_timeout_ms(name)
+
+              run_tool_with_timeout(
+                fn -> execute_named_tool(state, name, args) end,
+                timeout_ms,
+                "tool #{name}"
+              )
+              |> unwrap_tool_result(state)
+            else
+              {{:error, "unsupported custom tool call: #{name}"}, state}
+            end
+
+          _ ->
+            {{:error, "Unknown item type: #{item["type"]}"}, state}
+        end
+      rescue
+        e ->
+          {{:error, "#{tool_label(item)} crashed: #{Exception.message(e)}"}, state}
+      catch
+        kind, reason ->
+          {{:error, "#{tool_label(item)} #{kind}: #{inspect(reason)}"}, state}
       end
 
     duration_ms = System.monotonic_time(:millisecond) - start_ms
     log_tool_event(:done, item, result, duration_ms)
     result
   end
+
+  defp tool_label(%{"type" => "function_call", "name" => name}) when is_binary(name),
+    do: "tool #{name}"
+
+  defp tool_label(%{"type" => "custom_tool_call", "name" => name}) when is_binary(name),
+    do: "tool #{name}"
+
+  defp tool_label(%{"type" => "local_shell_call"}), do: "local_shell_call"
+  defp tool_label(_), do: "tool"
 
   defp decode_tool_args(nil), do: {:ok, %{}}
   defp decode_tool_args(args) when is_map(args), do: {:ok, args}
