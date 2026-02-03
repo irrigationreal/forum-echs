@@ -32,6 +32,7 @@ defmodule EchsClaude do
   @required_betas ["oauth-2025-04-20", "interleaved-thinking-2025-05-14"]
 
   def stream_response(opts) do
+    guard_test_env!()
     model_alias = Keyword.get(opts, :model, "opus")
     instructions = Keyword.get(opts, :instructions, "")
     input = Keyword.get(opts, :input, [])
@@ -48,7 +49,7 @@ defmodule EchsClaude do
 
     tools_payload = build_tools(tools, tool_allowlist)
     {input, _injected?} = ensure_instructions_in_first_user_message(input, instructions)
-    messages = build_messages(input)
+    messages = build_messages(input) |> cache_message_prefix()
 
     body =
       %{
@@ -56,7 +57,7 @@ defmodule EchsClaude do
         "messages" => messages,
         "max_tokens" => max_tokens,
         "stream" => true,
-        "system" => [%{"type" => "text", "text" => @claude_code_system}]
+        "system" => [%{"type" => "text", "text" => @claude_code_system, "cache_control" => %{"type" => "ephemeral"}}]
       }
       |> maybe_put("tools", tools_payload)
 
@@ -854,6 +855,78 @@ defmodule EchsClaude do
   defp maybe_put(map, _key, value) when value in [nil, [], ""], do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
+  # Block real API calls in the test environment unless explicitly opted in.
+  if Mix.env() == :test do
+    defp guard_test_env! do
+      unless System.get_env("ECHS_CLAUDE_LIVE") do
+        raise "EchsClaude.stream_response called in test without ECHS_CLAUDE_LIVE=1"
+      end
+    end
+  else
+    defp guard_test_env!, do: :ok
+  end
+
+  # -------------------------------------------------------------------
+  # Prompt caching helpers
+  # -------------------------------------------------------------------
+
+  @cache_control %{"type" => "ephemeral"}
+
+  # Place cache breakpoints on the last 3 messages in the conversation
+  # history (matching Claude Code's strategy).  This gives the API
+  # multiple candidate prefixes to cache so that both the full history
+  # and one-turn-ago history can get cache hits.
+  defp cache_message_prefix(messages) when length(messages) < 4, do: messages
+
+  defp cache_message_prefix(messages) do
+    len = length(messages)
+    threshold = len - 3
+
+    messages
+    |> Enum.with_index()
+    |> Enum.map(fn {msg, idx} ->
+      if idx > threshold do
+        add_cache_control_to_message(msg)
+      else
+        msg
+      end
+    end)
+  end
+
+  defp add_cache_control_to_message(%{"role" => "assistant", "content" => content} = msg)
+       when is_list(content) and content != [] do
+    # Mark the last non-thinking content block
+    updated =
+      content
+      |> Enum.reverse()
+      |> mark_first_cacheable_block()
+      |> Enum.reverse()
+
+    %{msg | "content" => updated}
+  end
+
+  defp add_cache_control_to_message(%{"content" => content} = msg)
+       when is_list(content) and content != [] do
+    %{msg | "content" => List.update_at(content, -1, &Map.put(&1, "cache_control", @cache_control))}
+  end
+
+  defp add_cache_control_to_message(%{"content" => content} = msg) when is_binary(content) do
+    %{msg | "content" => [%{"type" => "text", "text" => content, "cache_control" => @cache_control}]}
+  end
+
+  defp add_cache_control_to_message(msg), do: msg
+
+  # Find the first block (from the end) that isn't thinking/redacted_thinking
+  defp mark_first_cacheable_block([]), do: []
+
+  defp mark_first_cacheable_block([block | rest]) do
+    if block["type"] in ["thinking", "redacted_thinking"] do
+      [block | mark_first_cacheable_block(rest)]
+    else
+      [Map.put(block, "cache_control", @cache_control) | rest]
+    end
+  end
+
   defp prefix_tool_name(name) when is_binary(name), do: @tool_prefix <> name
   defp prefix_tool_name(_), do: @tool_prefix <> "tool"
 
@@ -872,13 +945,21 @@ defmodule EchsClaude do
   defp strip_tool_prefix(_), do: ""
 
   defp resolve_model_alias(model, config) when is_binary(model) do
-    alias_name = String.downcase(String.trim(model))
+    # ECHS_CLAUDE_MODEL overrides alias resolution entirely, skipping
+    # the /v1/models API call.  Useful for tests and CI.
+    case System.get_env("ECHS_CLAUDE_MODEL") do
+      override when is_binary(override) and override != "" ->
+        override
 
-    case alias_name do
-      "opus" -> latest_model_id(config, "opus") || model
-      "sonnet" -> latest_model_id(config, "sonnet") || model
-      "haiku" -> latest_model_id(config, "haiku") || model
-      _ -> model
+      _ ->
+        alias_name = String.downcase(String.trim(model))
+
+        case alias_name do
+          "opus" -> latest_model_id(config, "opus") || model
+          "sonnet" -> latest_model_id(config, "sonnet") || model
+          "haiku" -> latest_model_id(config, "haiku") || model
+          _ -> model
+        end
     end
   end
 
