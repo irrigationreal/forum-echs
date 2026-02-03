@@ -47,7 +47,7 @@ defmodule EchsCodex.Auth do
   end
 
   def auth_source do
-    Agent.get(@auth_agent, fn %{source: source} -> source end)
+    Agent.get(@auth_agent, fn state -> Map.get(state, :source, :file) end)
   end
 
   def get_headers do

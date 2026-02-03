@@ -87,14 +87,8 @@ defmodule EchsCore.ThreadWorker do
   - **Sub-agents** (`spawn_agent`, `send_input`, `wait`, `close_agent`): parallelize research and analysis. Keep writes/patches serialized in the parent.
   - **Coordination** (`blackboard_write`, `blackboard_read`): share state between sub-agents; use for summaries and decisions.
 
-  When in doubt, verify with tools before answering. If a tool fails, continue without it unless it is essential; explain limitations.
+  When in doubt, verify with tools before answering.
   </TOOLS_GUIDANCE>
-  """
-
-  @tool_fail_soft_guidance """
-  [FAIL_SOFT_GUIDANCE]
-  Tool failed. Continue without this tool unless it is essential. If essential, fix the error and retry once; otherwise answer directly.
-  [/FAIL_SOFT_GUIDANCE]
   """
 
   @claude_instructions_marker "<CLAUDE_INSTRUCTIONS>"
@@ -1733,25 +1727,10 @@ defmodule EchsCore.ThreadWorker do
     end
   end
 
-  defp format_tool_result({:error, err}) do
-    base =
-      case err do
-        text when is_binary(text) -> text
-        _ -> "Error: #{inspect(err)}"
-      end
-
-    append_fail_soft_guidance(base)
-  end
+  defp format_tool_result({:error, err}) when is_binary(err), do: err
+  defp format_tool_result({:error, err}), do: "Error: #{inspect(err)}"
   defp format_tool_result(:ok), do: "OK"
   defp format_tool_result(other), do: inspect(other)
-
-  defp append_fail_soft_guidance(text) when is_binary(text) do
-    if String.contains?(text, "[FAIL_SOFT_GUIDANCE]") do
-      text
-    else
-      text <> "\n\n" <> String.trim(@tool_fail_soft_guidance)
-    end
-  end
 
   # Sanitize binary data to ensure valid UTF-8 for JSON encoding
   defp sanitize_binary(data) do
