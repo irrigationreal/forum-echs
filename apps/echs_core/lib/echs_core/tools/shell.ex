@@ -8,9 +8,21 @@ defmodule EchsCore.Tools.Shell do
   alias EchsCore.Tools.Truncate
 
   @default_truncation_policy {:tokens, 10_000}
-  @timeout_exit_code 192
+  @timeout_exit_code 124
   @post_exit_grace_ms 50
   @exec_output_max_bytes 1_048_576
+
+  @sandbox_denied_keywords [
+    "operation not permitted",
+    "permission denied",
+    "read-only file system",
+    "seccomp",
+    "sandbox",
+    "landlock",
+    "failed to write file"
+  ]
+
+  @quick_reject_exit_codes [2, 126, 127]
 
   def spec do
     %{
@@ -147,7 +159,7 @@ defmodule EchsCore.Tools.Shell do
 
   def execute_array(argv, opts \\ []) do
     cwd = Keyword.get(opts, :cwd, File.cwd!())
-    timeout = Keyword.get(opts, :timeout_ms, 120_000)
+    timeout = Keyword.get(opts, :timeout_ms, 10_000)
     truncation_policy = Keyword.get(opts, :truncation_policy, @default_truncation_policy)
 
     case argv do
@@ -174,7 +186,7 @@ defmodule EchsCore.Tools.Shell do
 
   def execute_command(command, opts \\ []) do
     cwd = Keyword.get(opts, :cwd, File.cwd!())
-    timeout = Keyword.get(opts, :timeout_ms, 120_000)
+    timeout = Keyword.get(opts, :timeout_ms, 10_000)
     login = Keyword.get(opts, :login, true)
     truncation_policy = Keyword.get(opts, :truncation_policy, @default_truncation_policy)
     shell = Keyword.get(opts, :shell, System.get_env("SHELL") || "/bin/bash")
@@ -193,6 +205,27 @@ defmodule EchsCore.Tools.Shell do
 
   def format_freeform_output(output, exit_code, duration_ms, timed_out, truncation_policy) do
     format_freeform(output, exit_code, duration_ms, timed_out, truncation_policy)
+  end
+
+  @doc """
+  Detects if the command output suggests a sandbox denial.
+
+  Returns true if the exit code is non-zero and the output contains
+  keywords suggesting sandbox/permission restrictions.
+  """
+  def is_likely_sandbox_denied?(exit_code, _output) when exit_code == 0, do: false
+
+  def is_likely_sandbox_denied?(exit_code, output) when is_binary(output) do
+    cond do
+      exit_code in @quick_reject_exit_codes -> false
+      true -> output_contains_sandbox_keyword?(String.downcase(output))
+    end
+  end
+
+  def is_likely_sandbox_denied?(_exit_code, _output), do: false
+
+  defp output_contains_sandbox_keyword?(lower_output) do
+    Enum.any?(@sandbox_denied_keywords, &String.contains?(lower_output, &1))
   end
 
   defp run_command(argv, cwd, timeout_ms) do
