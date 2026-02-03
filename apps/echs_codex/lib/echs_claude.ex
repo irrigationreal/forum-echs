@@ -85,7 +85,7 @@ defmodule EchsClaude do
         method: :post,
         headers: headers,
         json: body,
-        receive_timeout: :infinity,
+        receive_timeout: 600_000,
         into: handler
       )
 

@@ -65,6 +65,14 @@ defmodule EchsCore.Tools.Exec do
     GenServer.call(server, :list_sessions)
   end
 
+  @doc """
+  Kill all active sessions. Used during daemon startup to clean up leaked
+  sessions from previous runs.
+  """
+  def kill_all_sessions(server \\ __MODULE__) do
+    GenServer.call(server, :kill_all_sessions)
+  end
+
   def exec_command_spec do
     %{
       "type" => "function",
@@ -338,6 +346,22 @@ defmodule EchsCore.Tools.Exec do
         state = remove_session(state, session_id, session.os_pid)
         {:reply, :ok, state}
     end
+  end
+
+  @impl true
+  def handle_call(:kill_all_sessions, _from, state) do
+    Enum.each(state.sessions, fn {_id, session} ->
+      if is_integer(session.os_pid) do
+        try do
+          :exec.stop(session.os_pid)
+        catch
+          _, _ -> :ok
+        end
+      end
+    end)
+
+    state = %{state | sessions: %{}, os_pid_to_session: %{}}
+    {:reply, :ok, state}
   end
 
   @impl true

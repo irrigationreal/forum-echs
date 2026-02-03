@@ -5,7 +5,7 @@ defmodule EchsServer.AutoResume do
 
   def start do
     if enabled?() do
-      Task.start(fn -> restore_threads() end)
+      Task.Supervisor.start_child(EchsCore.TaskSupervisor, fn -> restore_threads() end)
     else
       :ok
     end
@@ -13,6 +13,13 @@ defmodule EchsServer.AutoResume do
 
   defp restore_threads do
     if Code.ensure_loaded?(EchsStore) and EchsStore.enabled?() do
+      # Clean up any leaked shell sessions from a previous daemon run
+      try do
+        EchsCore.Tools.Exec.kill_all_sessions()
+      catch
+        :exit, _ -> :ok
+      end
+
       limit = auto_resume_limit()
       threads = EchsStore.list_threads(limit: limit)
 

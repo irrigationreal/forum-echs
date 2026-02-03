@@ -6,6 +6,7 @@ defmodule EchsServer.ConversationEventBuffer do
   use GenServer
 
   @buffer_size 500
+  @inactivity_timeout_ms 30 * 60 * 1000
 
   def start_link(conversation_id) do
     GenServer.start_link(__MODULE__, conversation_id, name: via(conversation_id))
@@ -36,10 +37,14 @@ defmodule EchsServer.ConversationEventBuffer do
         {:ok, pid}
 
       [] ->
-        DynamicSupervisor.start_child(
-          EchsServer.ConversationEventSupervisor,
-          {__MODULE__, conversation_id}
-        )
+        case DynamicSupervisor.start_child(
+               EchsServer.ConversationEventSupervisor,
+               {__MODULE__, conversation_id}
+             ) do
+          {:ok, pid} -> {:ok, pid}
+          {:error, {:already_started, pid}} -> {:ok, pid}
+          error -> error
+        end
     end
   end
 
@@ -50,7 +55,8 @@ defmodule EchsServer.ConversationEventBuffer do
   @impl true
   def init(conversation_id) do
     {:ok,
-     %{conversation_id: conversation_id, seq: 0, events: [], watchers: %{}, threads: MapSet.new()}}
+     %{conversation_id: conversation_id, seq: 0, events: [], watchers: %{}, threads: MapSet.new()},
+     @inactivity_timeout_ms}
   end
 
   @impl true
@@ -71,7 +77,7 @@ defmodule EchsServer.ConversationEventBuffer do
       send(pid, {:event, id, type, data})
     end)
 
-    {:reply, :ok, state}
+    {:reply, :ok, state, @inactivity_timeout_ms}
   end
 
   @impl true
@@ -84,19 +90,19 @@ defmodule EchsServer.ConversationEventBuffer do
         %{state | threads: MapSet.put(state.threads, thread_id)}
       end
 
-    {:noreply, state}
+    {:noreply, state, @inactivity_timeout_ms}
   end
 
   @impl true
   def handle_cast({:emit, event_type, data}, state) do
     {state, _id} = push_event(state, event_type, data)
-    {:noreply, state}
+    {:noreply, state, @inactivity_timeout_ms}
   end
 
   @impl true
-  def handle_info({event_type, data}, state) do
+  def handle_info({event_type, data}, state) when is_atom(event_type) do
     {state, _id} = push_event(state, event_type, data)
-    {:noreply, state}
+    {:noreply, state, @inactivity_timeout_ms}
   end
 
   @impl true
@@ -107,7 +113,17 @@ defmodule EchsServer.ConversationEventBuffer do
         _ -> state.watchers
       end
 
-    {:noreply, %{state | watchers: watchers}}
+    {:noreply, %{state | watchers: watchers}, @inactivity_timeout_ms}
+  end
+
+  @impl true
+  def handle_info(:timeout, state) do
+    {:stop, :normal, state}
+  end
+
+  @impl true
+  def handle_info(_msg, state) do
+    {:noreply, state, @inactivity_timeout_ms}
   end
 
   defp push_event(state, event_type, data) do

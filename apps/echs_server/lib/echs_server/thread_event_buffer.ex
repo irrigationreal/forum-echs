@@ -8,6 +8,9 @@ defmodule EchsServer.ThreadEventBuffer do
   use GenServer
 
   @buffer_size 500
+  # Terminate after 30 minutes of inactivity to avoid accumulating buffers
+  # for terminated threads.
+  @inactivity_timeout_ms 30 * 60 * 1000
 
   def start_link(thread_id) do
     GenServer.start_link(__MODULE__, thread_id, name: via(thread_id))
@@ -28,7 +31,14 @@ defmodule EchsServer.ThreadEventBuffer do
         {:ok, pid}
 
       [] ->
-        DynamicSupervisor.start_child(EchsServer.ThreadEventSupervisor, {__MODULE__, thread_id})
+        case DynamicSupervisor.start_child(
+               EchsServer.ThreadEventSupervisor,
+               {__MODULE__, thread_id}
+             ) do
+          {:ok, pid} -> {:ok, pid}
+          {:error, {:already_started, pid}} -> {:ok, pid}
+          error -> error
+        end
     end
   end
 
@@ -39,7 +49,8 @@ defmodule EchsServer.ThreadEventBuffer do
   @impl true
   def init(thread_id) do
     :ok = EchsCore.subscribe(thread_id)
-    {:ok, %{thread_id: thread_id, seq: 0, events: [], watchers: %{}}}
+    {:ok, %{thread_id: thread_id, seq: 0, oldest_id: 0, events: [], watchers: %{}},
+     @inactivity_timeout_ms}
   end
 
   @impl true
@@ -56,24 +67,35 @@ defmodule EchsServer.ThreadEventBuffer do
         _ -> Enum.filter(state.events, fn {id, _type, _data} -> id > last_id end)
       end
 
+    # If the client requested events that have been trimmed from the buffer,
+    # send a gap indicator so it knows data was lost.
+    if last_id != nil and last_id < state.oldest_id do
+      send(pid, {:event, 0, :events_gap, %{
+        oldest_available: state.oldest_id,
+        requested_after: last_id
+      }})
+    end
+
     Enum.each(backlog, fn {id, type, data} ->
       send(pid, {:event, id, type, data})
     end)
 
-    {:reply, :ok, state}
+    {:reply, :ok, state, @inactivity_timeout_ms}
   end
 
   @impl true
-  def handle_info({event_type, data}, state) do
+  def handle_info({event_type, data}, state)
+      when is_atom(event_type) do
     id = state.seq + 1
     event = {id, event_type, data}
-    events = trim_events(state.events ++ [event])
+    {events, oldest_id} = trim_events(state.events ++ [event], state.oldest_id)
 
     Enum.each(state.watchers, fn {pid, _ref} ->
       send(pid, {:event, id, event_type, data})
     end)
 
-    {:noreply, %{state | seq: id, events: events}}
+    {:noreply, %{state | seq: id, events: events, oldest_id: oldest_id},
+     @inactivity_timeout_ms}
   end
 
   @impl true
@@ -84,7 +106,18 @@ defmodule EchsServer.ThreadEventBuffer do
         _ -> state.watchers
       end
 
-    {:noreply, %{state | watchers: watchers}}
+    {:noreply, %{state | watchers: watchers}, @inactivity_timeout_ms}
+  end
+
+  @impl true
+  def handle_info(:timeout, state) do
+    {:stop, :normal, state}
+  end
+
+  @impl true
+  def handle_info(_msg, state) do
+    # Ignore unexpected messages (non-atom-keyed tuples, system messages, etc.)
+    {:noreply, state, @inactivity_timeout_ms}
   end
 
   defp normalize_last_id(nil), do: nil
@@ -100,13 +133,21 @@ defmodule EchsServer.ThreadEventBuffer do
   defp normalize_last_id(value) when is_integer(value), do: value
   defp normalize_last_id(_), do: nil
 
-  defp trim_events(events) do
+  defp trim_events(events, oldest_id) do
     excess = length(events) - @buffer_size
 
     if excess > 0 do
-      Enum.drop(events, excess)
+      trimmed = Enum.drop(events, excess)
+
+      new_oldest =
+        case trimmed do
+          [{id, _, _} | _] -> id
+          [] -> oldest_id
+        end
+
+      {trimmed, new_oldest}
     else
-      events
+      {events, oldest_id}
     end
   end
 end

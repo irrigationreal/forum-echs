@@ -366,9 +366,14 @@ defmodule EchsServer.Conversations do
   defp maybe_compact_with_summary(conversation, thread_id, content, items, config) do
     case build_compaction_message(conversation, items, content, config) do
       {:ok, compacted_content} ->
-        with {:ok, new_thread_id} <-
-               create_and_attach_thread(%{conversation | active_thread_id: nil}) do
-          {:ok, new_thread_id, compacted_content}
+        case create_and_attach_thread(%{conversation | active_thread_id: nil}) do
+          {:ok, new_thread_id} ->
+            {:ok, new_thread_id, compacted_content}
+
+          {:error, _} ->
+            # Compaction failed — fall back to the original thread so we never
+            # leave the conversation pointing at an orphaned/missing thread.
+            {:ok, thread_id, content}
         end
 
       {:error, _} ->

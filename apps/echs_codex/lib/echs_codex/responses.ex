@@ -11,6 +11,9 @@ defmodule EchsCodex.Responses do
 
   @default_model "gpt-5.2-codex"
   @max_error_body_bytes 50_000
+  # 10-minute safety net for hung connections (the stream task handles its own
+  # cancellation, but this prevents infinite hangs if the API silently drops).
+  @default_receive_timeout_ms 600_000
 
   @doc """
   Stream a response from the Codex API.
@@ -262,7 +265,7 @@ defmodule EchsCodex.Responses do
         method: :post,
         headers: headers,
         json: body,
-        receive_timeout: :infinity,
+        receive_timeout: @default_receive_timeout_ms,
         into: build_sse_handler(on_event)
       )
       |> Req.merge(req_opts)

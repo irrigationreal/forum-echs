@@ -61,9 +61,11 @@ defmodule EchsCore.StoreRestore do
 
       case ThreadWorker.create(create_opts) do
         {:ok, ^thread_id} ->
+          cleanup_orphaned_children(thread_id)
           {:ok, thread_id}
 
         {:ok, other_id} ->
+          cleanup_orphaned_children(other_id)
           {:ok, other_id}
 
         {:error, {:already_started, _pid}} ->
@@ -73,6 +75,25 @@ defmodule EchsCore.StoreRestore do
           other
       end
     end
+  end
+
+  # Kill any child threads that survived the parent crash. These orphans are
+  # still running under DynamicSupervisor but have no parent monitoring them.
+  defp cleanup_orphaned_children(parent_thread_id) do
+    Registry.select(EchsCore.Registry, [{{:"$1", :"$2", :_}, [], [{{:"$1", :"$2"}}]}])
+    |> Enum.each(fn {child_id, _pid} ->
+      if child_id != parent_thread_id do
+        try do
+          state = ThreadWorker.get_state(child_id)
+
+          if state.parent_thread_id == parent_thread_id do
+            ThreadWorker.kill(child_id)
+          end
+        catch
+          :exit, _ -> :ok
+        end
+      end
+    end)
   end
 
   defp ensure_store_available do

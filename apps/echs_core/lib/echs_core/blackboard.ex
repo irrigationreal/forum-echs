@@ -88,14 +88,22 @@ defmodule EchsCore.Blackboard do
       send(pid, {:blackboard_update, key, value})
     end)
 
-    # If notify_parent, broadcast event
+    # If notify_parent, broadcast event on per-parent topic
     if Keyword.get(opts, :notify_parent, false) do
       steer_message = Keyword.get(opts, :steer_message)
       by = Keyword.get(opts, :by)
+      parent_id = Keyword.get(opts, :parent_thread_id)
+
+      topic =
+        if is_binary(parent_id) and parent_id != "" do
+          "blackboard:#{parent_id}"
+        else
+          "blackboard"
+        end
 
       Phoenix.PubSub.broadcast(
         EchsCore.PubSub,
-        "blackboard",
+        topic,
         {:blackboard_set, key, value, by, steer_message}
       )
     end

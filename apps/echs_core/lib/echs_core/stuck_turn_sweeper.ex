@@ -62,6 +62,28 @@ defmodule EchsCore.StuckTurnSweeper do
     thread_id = msg.thread_id
     message_id = msg.message_id
 
+    # If the thread is alive in-memory, send an interrupt instead of directly
+    # modifying DB state. This avoids divergence between DB and GenServer state.
+    case Registry.lookup(EchsCore.Registry, thread_id) do
+      [{pid, _}] when is_pid(pid) ->
+        Logger.warning(
+          "stuck_turn_sweeper interrupting live thread thread_id=#{thread_id} message_id=#{message_id}"
+        )
+
+        try do
+          EchsCore.interrupt_thread(thread_id)
+        catch
+          :exit, _ -> :ok
+        end
+
+        {0, 0}
+
+      _ ->
+        repair_orphaned_message(thread_id, message_id, now_ms)
+    end
+  end
+
+  defp repair_orphaned_message(thread_id, message_id, now_ms) do
     repair_added =
       case EchsStore.load_all(thread_id) do
         {:ok, items} ->

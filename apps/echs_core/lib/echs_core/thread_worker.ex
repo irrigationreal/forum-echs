@@ -130,7 +130,10 @@ defmodule EchsCore.ThreadWorker do
     :shell_snapshot_path,
     :shell_session_id,
     :shell_session_cwd,
-    :shell_session_login
+    :shell_session_login,
+    :tool_task_ref,
+    :tool_task_pid,
+    :tool_task_monitor
   ]
 
   @type thread_id :: String.t()
@@ -417,11 +420,9 @@ defmodule EchsCore.ThreadWorker do
     # Create thread-local blackboard
     {:ok, blackboard} = Blackboard.start_link([])
 
-    # Subscribe to blackboard events for cross-thread coordination.
-    #
-    # We filter events in `handle_info/2` so only relevant threads react (e.g. a
-    # parent thread should only handle notifications coming from its children).
-    :ok = Phoenix.PubSub.subscribe(EchsCore.PubSub, "blackboard")
+    # Subscribe to blackboard events scoped to this thread. Children broadcast
+    # on "blackboard:#{parent_thread_id}" so only the parent receives them.
+    :ok = Phoenix.PubSub.subscribe(EchsCore.PubSub, "blackboard:#{thread_id}")
 
     model = Keyword.get(opts, :model, "gpt-5.2-codex")
 
@@ -738,7 +739,8 @@ defmodule EchsCore.ThreadWorker do
 
   @impl true
   def handle_call(:resume, _from, state) do
-    {:reply, :ok, touch(%{state | status: :idle})}
+    state = touch(%{state | status: :idle})
+    {:reply, :ok, start_next_turn(state)}
   end
 
   @impl true
@@ -835,9 +837,7 @@ defmodule EchsCore.ThreadWorker do
           emit_assistant_events(state, assistant_events)
 
           if tool_calls != [] do
-            {tool_results, state} = execute_tool_calls(state, tool_calls)
-            state = append_history_items(state, tool_results)
-            {:noreply, start_stream(state)}
+            {:noreply, start_tool_task(state, tool_calls)}
           else
             state = complete_current_message(state, :completed, nil)
             broadcast(state, :turn_completed, %{thread_id: state.thread_id})
@@ -880,10 +880,40 @@ defmodule EchsCore.ThreadWorker do
   end
 
   @impl true
+  def handle_info({:tool_results, ref, tool_results, state_updates}, state) do
+    if ref == state.tool_task_ref do
+      state = clear_tool_task(state)
+      state = merge_tool_state(state, state_updates)
+      state = append_history_items(state, tool_results)
+      {:noreply, start_stream(state)}
+    else
+      {:noreply, state}
+    end
+  end
+
+  @impl true
   def handle_info({:DOWN, ref, :process, pid, reason}, state) do
     cond do
       ref == state.stream_monitor ->
         state = clear_stream(state)
+
+        case reason do
+          :normal ->
+            {:noreply, state}
+
+          :shutdown ->
+            {:noreply, state}
+
+          _ ->
+            state = complete_current_message(state, :error, reason)
+            broadcast(state, :turn_error, %{thread_id: state.thread_id, error: reason})
+            state = finish_turn(state, {:error, reason})
+            state = reply_interrupt_waiters(state, {:error, reason})
+            {:noreply, start_next_turn(%{state | status: :idle})}
+        end
+
+      ref == state.tool_task_monitor ->
+        state = clear_tool_task(state)
 
         case reason do
           :normal ->
@@ -1393,9 +1423,23 @@ defmodule EchsCore.ThreadWorker do
 
     state = clear_stream(state)
 
-    if reply? do
-      _ = finish_turn(state, {:error, reason})
+    # Also kill any running tool execution task
+    if state.tool_task_pid do
+      Process.exit(state.tool_task_pid, :shutdown)
     end
+
+    if state.tool_task_monitor do
+      Process.demonitor(state.tool_task_monitor, [:flush])
+    end
+
+    state = clear_tool_task(state)
+
+    state =
+      if reply? do
+        finish_turn(state, {:error, reason})
+      else
+        state
+      end
 
     state = reply_interrupt_waiters(state, {:error, reason})
 
@@ -1409,6 +1453,66 @@ defmodule EchsCore.ThreadWorker do
     end
 
     %{state | stream_ref: nil, stream_pid: nil, stream_monitor: nil}
+  end
+
+  defp start_tool_task(state, tool_calls) do
+    tool_ref = make_ref()
+    parent = self()
+
+    # Snapshot the mutable state fields that tool execution may modify
+    state_snapshot = %{
+      cwd: state.cwd,
+      children: state.children,
+      shell_session_id: state.shell_session_id,
+      shell_session_cwd: state.shell_session_cwd,
+      shell_session_login: state.shell_session_login,
+      tool_handlers: state.tool_handlers,
+      blackboard: state.blackboard,
+      thread_id: state.thread_id,
+      shell_path: state.shell_path,
+      shell_snapshot_path: state.shell_snapshot_path,
+      instructions: state.instructions,
+      model: state.model,
+      coordination_mode: state.coordination_mode,
+      history_items: state.history_items
+    }
+
+    {:ok, pid} =
+      Task.Supervisor.start_child(EchsCore.TaskSupervisor, fn ->
+        {tool_results, final_state} = execute_tool_calls(state_snapshot, tool_calls)
+
+        state_updates = %{
+          cwd: final_state.cwd,
+          children: final_state.children,
+          shell_session_id: final_state.shell_session_id,
+          shell_session_cwd: final_state.shell_session_cwd,
+          shell_session_login: final_state.shell_session_login
+        }
+
+        send(parent, {:tool_results, tool_ref, tool_results, state_updates})
+      end)
+
+    monitor_ref = Process.monitor(pid)
+
+    %{state | tool_task_ref: tool_ref, tool_task_pid: pid, tool_task_monitor: monitor_ref}
+  end
+
+  defp clear_tool_task(state) do
+    if state.tool_task_monitor do
+      Process.demonitor(state.tool_task_monitor, [:flush])
+    end
+
+    %{state | tool_task_ref: nil, tool_task_pid: nil, tool_task_monitor: nil}
+  end
+
+  defp merge_tool_state(state, updates) when is_map(updates) do
+    %{state |
+      cwd: Map.get(updates, :cwd, state.cwd),
+      children: Map.get(updates, :children, state.children),
+      shell_session_id: Map.get(updates, :shell_session_id, state.shell_session_id),
+      shell_session_cwd: Map.get(updates, :shell_session_cwd, state.shell_session_cwd),
+      shell_session_login: Map.get(updates, :shell_session_login, state.shell_session_login)
+    }
   end
 
   defp finish_turn(state, reply) do
@@ -1619,6 +1723,9 @@ defmodule EchsCore.ThreadWorker do
         state
 
       state.stream_pid != nil ->
+        state
+
+      state.tool_task_pid != nil ->
         state
 
       state.resume_turns != [] ->
@@ -2513,21 +2620,25 @@ defmodule EchsCore.ThreadWorker do
     end
   end
 
-  defp send_to_subagent(_state, args) do
+  defp send_to_subagent(state, args) do
     agent_id = args["id"] || args["agent_id"]
     message = args["message"]
 
-    if args["interrupt"] do
-      safe_interrupt(agent_id)
+    if not Map.has_key?(state.children, agent_id) do
+      {:error, "agent #{agent_id} is not a child of this thread"}
+    else
+      if args["interrupt"] do
+        safe_interrupt(agent_id)
+      end
+
+      _ =
+        Task.Supervisor.start_child(EchsCore.TaskSupervisor, fn ->
+          _ = safe_send_message(agent_id, message)
+          :ok
+        end)
+
+      {:ok, %{agent_id: agent_id, status: "sent"}}
     end
-
-    _ =
-      Task.Supervisor.start_child(EchsCore.TaskSupervisor, fn ->
-        _ = safe_send_message(agent_id, message)
-        :ok
-      end)
-
-    {:ok, %{agent_id: agent_id, status: "sent"}}
   end
 
   defp execute_custom_tool(state, name, args) do
@@ -2648,7 +2759,10 @@ defmodule EchsCore.ThreadWorker do
           {:ok, %{results: new_results, timed_out: false, remaining: still_running}}
 
         _ ->
-          Process.sleep(100)
+          # TODO: Replace polling with Process.monitor notifications for better
+          # efficiency. Current approach polls at 500ms which is acceptable for
+          # the typical sub-agent count (<20).
+          Process.sleep(500)
           wait_loop(still_running, mode, timeout, start_time, new_results)
       end
     end
@@ -2667,7 +2781,8 @@ defmodule EchsCore.ThreadWorker do
     opts = [
       notify_parent: args["notify_parent"] || false,
       steer_message: args["steer_message"],
-      by: state.thread_id
+      by: state.thread_id,
+      parent_thread_id: state.parent_thread_id
     ]
 
     # Use global blackboard for cross-agent coordination
