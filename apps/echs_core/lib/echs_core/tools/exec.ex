@@ -360,7 +360,7 @@ defmodule EchsCore.Tools.Exec do
       end
     end)
 
-    state = %{state | sessions: %{}, os_pid_to_session: %{}}
+    state = %{state | sessions: %{}, os_pid_index: %{}}
     {:reply, :ok, state}
   end
 

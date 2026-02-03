@@ -259,6 +259,27 @@ defmodule EchsCodex.Responses do
     payload_dropped? = Keyword.get(opts, :payload_dropped?, false)
     meta = Keyword.get(opts, :meta, %{})
 
+    case EchsCodex.CircuitBreaker.check(:codex) do
+      {:error, :circuit_open} ->
+        {:error, %{status: 503, body: "circuit breaker open for codex API"}}
+
+      :ok ->
+        do_stream_request_inner(
+          body, headers, on_event, req_opts, summary_requested,
+          auth_refreshed?: auth_refreshed?,
+          summary_dropped?: summary_dropped?,
+          payload_dropped?: payload_dropped?,
+          meta: meta
+        )
+    end
+  end
+
+  defp do_stream_request_inner(body, headers, on_event, req_opts, summary_requested, opts) do
+    auth_refreshed? = Keyword.get(opts, :auth_refreshed?, false)
+    summary_dropped? = Keyword.get(opts, :summary_dropped?, false)
+    payload_dropped? = Keyword.get(opts, :payload_dropped?, false)
+    meta = Keyword.get(opts, :meta, %{})
+
     request =
       Req.new(
         url: base_url(),
@@ -272,6 +293,7 @@ defmodule EchsCodex.Responses do
 
     case Req.request(request) do
       {:ok, %{status: 200}} = result ->
+        EchsCodex.CircuitBreaker.record_success(:codex)
         result
 
       {:ok, %{status: 401} = resp} ->
@@ -284,7 +306,7 @@ defmodule EchsCodex.Responses do
             :ok ->
               headers = auth_headers()
 
-              do_stream_request(body, headers, on_event, req_opts, summary_requested,
+              do_stream_request_inner(body, headers, on_event, req_opts, summary_requested,
                 auth_refreshed?: true,
                 summary_dropped?: summary_dropped?,
                 payload_dropped?: payload_dropped?,
@@ -301,13 +323,13 @@ defmodule EchsCodex.Responses do
 
         cond do
           summary_requested and not summary_dropped? and status in [400, 403] ->
-            Logger.warn(
+            Logger.warning(
               "Codex request rejected (status=#{status}); retrying once without reasoning summary model=#{meta[:model]} items=#{meta[:items]} tools=#{meta[:tools]}"
             )
 
             body = drop_reasoning_summary(body)
 
-            do_stream_request(body, headers, on_event, req_opts, summary_requested,
+            do_stream_request_inner(body, headers, on_event, req_opts, summary_requested,
               auth_refreshed?: auth_refreshed?,
               summary_dropped?: true,
               payload_dropped?: payload_dropped?,
@@ -315,18 +337,27 @@ defmodule EchsCodex.Responses do
             )
 
           summary_dropped? and not payload_dropped? and status in [400, 403] ->
-            Logger.warn(
+            Logger.warning(
               "Codex request rejected (status=#{status}); retrying once without reasoning payload model=#{meta[:model]} items=#{meta[:items]} tools=#{meta[:tools]}"
             )
 
             body = drop_reasoning_payload(body)
 
-            do_stream_request(body, headers, on_event, req_opts, summary_requested,
+            do_stream_request_inner(body, headers, on_event, req_opts, summary_requested,
               auth_refreshed?: auth_refreshed?,
               summary_dropped?: true,
               payload_dropped?: true,
               meta: meta
             )
+
+          status >= 500 ->
+            EchsCodex.CircuitBreaker.record_failure(:codex)
+
+            Logger.error(
+              "Codex error: status=#{status} body=#{inspect(resp_body)} headers=#{inspect(resp.headers)} model=#{meta[:model]} items=#{meta[:items]} tools=#{meta[:tools]}"
+            )
+
+            {:error, %{status: status, body: resp_body}}
 
           true ->
             Logger.error(
@@ -337,11 +368,28 @@ defmodule EchsCodex.Responses do
         end
 
       {:error, _} = error ->
+        EchsCodex.CircuitBreaker.record_failure(:codex)
         error
     end
   end
 
   defp do_compact_request(body, headers, req_opts, opts) do
+    auth_refreshed? = Keyword.get(opts, :auth_refreshed?, false)
+    meta = Keyword.get(opts, :meta, %{})
+
+    case EchsCodex.CircuitBreaker.check(:codex) do
+      {:error, :circuit_open} ->
+        {:error, %{status: 503, body: "circuit breaker open for codex API"}}
+
+      :ok ->
+        do_compact_request_inner(body, headers, req_opts,
+          auth_refreshed?: auth_refreshed?,
+          meta: meta
+        )
+    end
+  end
+
+  defp do_compact_request_inner(body, headers, req_opts, opts) do
     auth_refreshed? = Keyword.get(opts, :auth_refreshed?, false)
     meta = Keyword.get(opts, :meta, %{})
 
@@ -356,6 +404,7 @@ defmodule EchsCodex.Responses do
 
     case Req.request(request) do
       {:ok, %{status: 200, body: body}} ->
+        EchsCodex.CircuitBreaker.record_success(:codex)
         {:ok, %{output: body["output"]}}
 
       {:ok, %{status: 401, body: resp_body}} ->
@@ -368,7 +417,10 @@ defmodule EchsCodex.Responses do
               headers = Enum.reject(headers, fn {k, _} -> k == "accept" end)
               headers = [{"accept", "application/json"} | headers]
 
-              do_compact_request(body, headers, req_opts, auth_refreshed?: true, meta: meta)
+              do_compact_request_inner(body, headers, req_opts,
+                auth_refreshed?: true,
+                meta: meta
+              )
 
             error ->
               error
@@ -376,6 +428,8 @@ defmodule EchsCodex.Responses do
         end
 
       {:ok, %{status: status, body: resp_body}} ->
+        if status >= 500, do: EchsCodex.CircuitBreaker.record_failure(:codex)
+
         Logger.error(
           "Codex compact error: status=#{status} body=#{inspect(resp_body)} model=#{meta[:model]} items=#{meta[:items]}"
         )
@@ -383,6 +437,7 @@ defmodule EchsCodex.Responses do
         {:error, %{status: status, body: resp_body}}
 
       {:error, _} = error ->
+        EchsCodex.CircuitBreaker.record_failure(:codex)
         error
     end
   end

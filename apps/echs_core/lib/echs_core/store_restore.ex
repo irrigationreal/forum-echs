@@ -22,6 +22,7 @@ defmodule EchsCore.StoreRestore do
 
   defp restore_from_store(thread_id, message_limit) do
     with :ok <- ensure_store_available(),
+         :ok <- flush_write_buffer(),
          {:ok, thread} <- EchsStore.get_thread(thread_id),
          {:ok, history_items} <- EchsStore.load_all(thread_id) do
       auto_resume? = auto_resume_enabled?()
@@ -94,6 +95,14 @@ defmodule EchsCore.StoreRestore do
         end
       end
     end)
+  end
+
+  defp flush_write_buffer do
+    if Code.ensure_loaded?(EchsStore.WriteBuffer) do
+      EchsStore.WriteBuffer.flush()
+    else
+      :ok
+    end
   end
 
   defp ensure_store_available do

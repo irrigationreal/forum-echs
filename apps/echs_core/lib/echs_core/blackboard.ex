@@ -31,7 +31,16 @@ defmodule EchsCore.Blackboard do
     table =
       :ets.new(:blackboard, [:set, :public, read_concurrency: true, write_concurrency: true])
 
+    # Store table tid so clients can bypass GenServer for reads/writes
+    :persistent_term.put({__MODULE__, self()}, table)
+
     {:ok, %__MODULE__{table: table, watchers: %{}, monitors: %{}}}
+  end
+
+  @impl true
+  def terminate(_reason, state) do
+    :persistent_term.erase({__MODULE__, self()})
+    state
   end
 
   @doc """
@@ -40,7 +49,16 @@ defmodule EchsCore.Blackboard do
   """
   @spec set(GenServer.server(), key(), value(), keyword()) :: :ok
   def set(blackboard, key, value, opts \\ []) do
-    GenServer.call(blackboard, {:set, key, value, opts})
+    if Keyword.get(opts, :notify_parent, false) do
+      # Must go through GenServer for PubSub broadcast + watcher notification
+      GenServer.call(blackboard, {:set, key, value, opts})
+    else
+      # Fast path: write directly to ETS, notify watchers via GenServer cast
+      table = resolve_table(blackboard)
+      :ets.insert(table, {key, value})
+      GenServer.cast(blackboard, {:notify_watchers, key, value})
+      :ok
+    end
   end
 
   @doc """
@@ -48,7 +66,12 @@ defmodule EchsCore.Blackboard do
   """
   @spec get(GenServer.server(), key()) :: {:ok, value()} | :not_found
   def get(blackboard, key) do
-    GenServer.call(blackboard, {:get, key})
+    table = resolve_table(blackboard)
+
+    case :ets.lookup(table, key) do
+      [{^key, value}] -> {:ok, value}
+      [] -> :not_found
+    end
   end
 
   @doc """
@@ -72,7 +95,8 @@ defmodule EchsCore.Blackboard do
   """
   @spec all(GenServer.server()) :: map()
   def all(blackboard) do
-    GenServer.call(blackboard, :all)
+    table = resolve_table(blackboard)
+    table |> :ets.tab2list() |> Map.new()
   end
 
   # Callbacks
@@ -112,17 +136,6 @@ defmodule EchsCore.Blackboard do
   end
 
   @impl true
-  def handle_call({:get, key}, _from, state) do
-    result =
-      case :ets.lookup(state.table, key) do
-        [{^key, value}] -> {:ok, value}
-        [] -> :not_found
-      end
-
-    {:reply, result, state}
-  end
-
-  @impl true
   def handle_call({:watch, key, pid}, _from, state) do
     state = monitor_watcher(state, pid)
     watchers = Map.update(state.watchers, key, MapSet.new([pid]), &MapSet.put(&1, pid))
@@ -141,9 +154,14 @@ defmodule EchsCore.Blackboard do
   end
 
   @impl true
-  def handle_call(:all, _from, state) do
-    items = :ets.tab2list(state.table)
-    {:reply, Map.new(items), state}
+  def handle_cast({:notify_watchers, key, value}, state) do
+    watchers = Map.get(state.watchers, key, MapSet.new())
+
+    Enum.each(watchers, fn pid ->
+      send(pid, {:blackboard_update, key, value})
+    end)
+
+    {:noreply, state}
   end
 
   @impl true
@@ -166,6 +184,16 @@ defmodule EchsCore.Blackboard do
       ref = Process.monitor(pid)
       %{state | monitors: Map.put(state.monitors, pid, ref)}
     end
+  end
+
+  # Resolve a GenServer name/pid to the underlying ETS table tid.
+  # Uses persistent_term for O(1) lookup without messaging the GenServer.
+  defp resolve_table(pid) when is_pid(pid) do
+    :persistent_term.get({__MODULE__, pid})
+  end
+
+  defp resolve_table(name) do
+    resolve_table(GenServer.whereis(name))
   end
 
   defp drop_watcher(watchers, pid) do

@@ -7,33 +7,37 @@ defmodule EchsServer.Application do
 
   @impl true
   def start(_type, _args) do
-    base_children = [
+    children = [
+      # Registries must be up before event buffers
       {Registry, keys: :unique, name: EchsServer.ThreadEventRegistry},
-      {DynamicSupervisor, strategy: :one_for_one, name: EchsServer.ThreadEventSupervisor},
       {Registry, keys: :unique, name: EchsServer.ConversationEventRegistry},
+
+      # Metrics (attaches telemetry handlers, must be up before traffic)
+      EchsServer.Metrics,
+
+      # Dynamic supervisors for event buffers
+      {DynamicSupervisor, strategy: :one_for_one, name: EchsServer.ThreadEventSupervisor},
       {DynamicSupervisor, strategy: :one_for_one, name: EchsServer.ConversationEventSupervisor}
     ]
 
     children =
       if Application.get_env(:echs_server, :start_server, true) do
-        base_children ++
-          [
-            {Bandit, bandit_options()}
-          ]
+        children ++ [{Bandit, bandit_options()}]
       else
-        base_children
+        children
       end
 
-    opts = [strategy: :one_for_one, name: EchsServer.Supervisor]
+    # rest_for_one: if a registry crashes, downstream supervisors restart
+    opts = [strategy: :rest_for_one, name: EchsServer.Supervisor]
 
-    if children != [] do
+    if Application.get_env(:echs_server, :start_server, true) do
       Logger.info(
         "ECHS server listening on http://#{EchsServer.default_bind()}:#{EchsServer.default_port()}"
       )
     end
 
     case Supervisor.start_link(children, opts) do
-      {:ok, pid} = result ->
+      {:ok, _pid} = result ->
         _ = EchsServer.AutoResume.start()
         result
 

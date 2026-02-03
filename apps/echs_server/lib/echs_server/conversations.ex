@@ -151,7 +151,7 @@ defmodule EchsServer.Conversations do
   defp normalize_offset(value) when is_integer(value) and value >= 0, do: value
   defp normalize_offset(_), do: 0
 
-  defp normalize_limit(value, total) when is_integer(value) and value > 0, do: value
+  defp normalize_limit(value, _total) when is_integer(value) and value > 0, do: value
   defp normalize_limit(_value, total), do: total
 
   defp ensure_conversation(conversation_id) do

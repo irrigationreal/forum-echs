@@ -90,15 +90,24 @@ defmodule EchsClaude do
       )
 
     result =
-      case Req.request(request) do
-        {:ok, %{status: 200}} = ok ->
-          ok
+      case EchsCodex.CircuitBreaker.check(:claude) do
+        {:error, :circuit_open} ->
+          {:error, %{status: 503, body: "circuit breaker open for claude API"}}
 
-        {:ok, %{status: status, body: body}} ->
-          {:error, %{status: status, body: body}}
+        :ok ->
+          case Req.request(request) do
+            {:ok, %{status: 200}} = ok ->
+              EchsCodex.CircuitBreaker.record_success(:claude)
+              ok
 
-        {:error, _} = error ->
-          error
+            {:ok, %{status: status, body: body}} ->
+              if status >= 500, do: EchsCodex.CircuitBreaker.record_failure(:claude)
+              {:error, %{status: status, body: body}}
+
+            {:error, _} = error ->
+              EchsCodex.CircuitBreaker.record_failure(:claude)
+              error
+          end
       end
 
     Agent.stop(state_agent)

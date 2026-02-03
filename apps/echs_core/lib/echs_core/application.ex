@@ -6,32 +6,31 @@ defmodule EchsCore.Application do
   @impl true
   def start(_type, _args) do
     children = [
-      # Registry for thread_id -> pid lookup
+      # Registry must be up before anything that looks up thread pids
       {Registry, keys: :unique, name: EchsCore.Registry},
 
-      # DynamicSupervisor for ThreadWorker processes
-      {DynamicSupervisor, strategy: :one_for_one, name: EchsCore.ThreadSupervisor},
+      # PubSub for events (needed by threads + infra)
+      {Phoenix.PubSub, name: EchsCore.PubSub},
 
-      # Task supervisor for tool execution
-      {Task.Supervisor, name: EchsCore.TaskSupervisor},
-
-      # Global blackboard
+      # Global blackboard (ETS-backed shared state for sub-agent coordination)
       {EchsCore.Blackboard, name: EchsCore.Blackboard.Global},
-
-      # Exec session manager (UnifiedExec-style sessions; port-backed stdio)
-      {EchsCore.Tools.Exec, name: EchsCore.Tools.Exec},
 
       # Global concurrency limiter for turns
       {EchsCore.TurnLimiter, name: EchsCore.TurnLimiter},
 
-      # PubSub for events
-      {Phoenix.PubSub, name: EchsCore.PubSub},
+      # Infrastructure supervisor: tools + background sweeper (one_for_one)
+      {EchsCore.InfraSupervisor, []},
 
-      # Background sweeper for stuck turns (best-effort)
-      {EchsCore.StuckTurnSweeper, []}
+      # DynamicSupervisor for ThreadWorker processes
+      {DynamicSupervisor, strategy: :one_for_one, name: EchsCore.ThreadSupervisor},
+
+      # Task supervisor for streaming and tool execution
+      {Task.Supervisor, name: EchsCore.TaskSupervisor}
     ]
 
-    opts = [strategy: :one_for_one, name: EchsCore.Supervisor]
+    # rest_for_one: if Registry (or PubSub, Blackboard, TurnLimiter) crashes,
+    # everything downstream restarts in order — prevents orphaned threads
+    opts = [strategy: :rest_for_one, name: EchsCore.Supervisor]
     Supervisor.start_link(children, opts)
   end
 end

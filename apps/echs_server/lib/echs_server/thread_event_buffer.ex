@@ -3,11 +3,16 @@ defmodule EchsServer.ThreadEventBuffer do
   Buffers recent thread events and assigns monotonically increasing IDs.
 
   This enables SSE clients to resume with Last-Event-ID.
+
+  Configuration:
+    - ECHS_EVENT_BUFFER_SIZE — max events to keep per thread (default 500)
   """
 
   use GenServer
 
-  @buffer_size 500
+  require Logger
+
+  @default_buffer_size 500
   # Terminate after 30 minutes of inactivity to avoid accumulating buffers
   # for terminated threads.
   @inactivity_timeout_ms 30 * 60 * 1000
@@ -49,8 +54,16 @@ defmodule EchsServer.ThreadEventBuffer do
   @impl true
   def init(thread_id) do
     :ok = EchsCore.subscribe(thread_id)
-    {:ok, %{thread_id: thread_id, seq: 0, oldest_id: 0, events: [], watchers: %{}},
-     @inactivity_timeout_ms}
+
+    {:ok,
+     %{
+       thread_id: thread_id,
+       seq: 0,
+       oldest_id: 0,
+       events: [],
+       watchers: %{},
+       buffer_size: buffer_size()
+     }, @inactivity_timeout_ms}
   end
 
   @impl true
@@ -88,7 +101,12 @@ defmodule EchsServer.ThreadEventBuffer do
       when is_atom(event_type) do
     id = state.seq + 1
     event = {id, event_type, data}
-    {events, oldest_id} = trim_events(state.events ++ [event], state.oldest_id)
+    {events, oldest_id, dropped} = trim_events(state.events ++ [event], state.oldest_id, state.buffer_size)
+
+    if dropped > 0 do
+      Logger.warning("event_buffer truncated thread=#{state.thread_id} dropped=#{dropped}")
+      EchsCore.Telemetry.event_buffer_truncated(state.thread_id, dropped)
+    end
 
     Enum.each(state.watchers, fn {pid, _ref} ->
       send(pid, {:event, id, event_type, data})
@@ -133,8 +151,8 @@ defmodule EchsServer.ThreadEventBuffer do
   defp normalize_last_id(value) when is_integer(value), do: value
   defp normalize_last_id(_), do: nil
 
-  defp trim_events(events, oldest_id) do
-    excess = length(events) - @buffer_size
+  defp trim_events(events, oldest_id, max_size) do
+    excess = length(events) - max_size
 
     if excess > 0 do
       trimmed = Enum.drop(events, excess)
@@ -145,9 +163,22 @@ defmodule EchsServer.ThreadEventBuffer do
           [] -> oldest_id
         end
 
-      {trimmed, new_oldest}
+      {trimmed, new_oldest, excess}
     else
-      {events, oldest_id}
+      {events, oldest_id, 0}
+    end
+  end
+
+  defp buffer_size do
+    case System.get_env("ECHS_EVENT_BUFFER_SIZE") do
+      nil ->
+        @default_buffer_size
+
+      value ->
+        case Integer.parse(value) do
+          {int, _} when int > 0 -> int
+          _ -> @default_buffer_size
+        end
     end
   end
 end

@@ -8,7 +8,8 @@ defmodule EchsStore.Application do
   @impl true
   def start(_type, _args) do
     children = [
-      EchsStore.Repo
+      EchsStore.Repo,
+      EchsStore.WriteBuffer
     ]
 
     opts = [strategy: :one_for_one, name: EchsStore.Supervisor]

@@ -5,7 +5,8 @@ defmodule EchsCodex.Application do
   @impl true
   def start(_type, _args) do
     children = [
-      {EchsCodex.Auth, []}
+      {EchsCodex.Auth, []},
+      EchsCodex.CircuitBreaker
     ]
 
     opts = [strategy: :one_for_one, name: EchsCodex.Supervisor]

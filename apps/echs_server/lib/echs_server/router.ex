@@ -23,7 +23,18 @@ defmodule EchsServer.Router do
   plug(:dispatch)
 
   get "/healthz" do
-    JSON.send_json(conn, 200, %{ok: true})
+    {status, body} = EchsServer.HealthCheck.run()
+    JSON.send_json(conn, status, body)
+  end
+
+  get "/metrics" do
+    conn
+    |> put_resp_content_type("text/plain")
+    |> send_resp(200, EchsServer.Metrics.prometheus_text())
+  end
+
+  get "/metrics/json" do
+    JSON.send_json(conn, 200, EchsServer.Metrics.summary())
   end
 
   get "/v1/models" do
@@ -73,15 +84,11 @@ defmodule EchsServer.Router do
   end
 
   get "/v1/conversations" do
-    case Conversations.list(limit: 200) do
-      {:ok, conversations} ->
-        JSON.send_json(conn, 200, %{
-          conversations: Enum.map(conversations, &sanitize_conversation_record/1)
-        })
+    {:ok, conversations} = Conversations.list(limit: 200)
 
-      {:error, reason} ->
-        JSON.send_error(conn, 500, "failed to list conversations", %{reason: inspect(reason)})
-    end
+    JSON.send_json(conn, 200, %{
+      conversations: Enum.map(conversations, &sanitize_conversation_record/1)
+    })
   end
 
   get "/v1/conversations/:conversation_id" do
@@ -110,16 +117,12 @@ defmodule EchsServer.Router do
   end
 
   get "/v1/conversations/:conversation_id/sessions" do
-    case Conversations.list_sessions(conversation_id) do
-      {:ok, sessions} ->
-        JSON.send_json(conn, 200, %{
-          conversation_id: conversation_id,
-          sessions: Enum.map(sessions, &sanitize_thread_record/1)
-        })
+    {:ok, sessions} = Conversations.list_sessions(conversation_id)
 
-      {:error, _} ->
-        JSON.send_error(conn, 404, "conversation not found")
-    end
+    JSON.send_json(conn, 200, %{
+      conversation_id: conversation_id,
+      sessions: Enum.map(sessions, &sanitize_thread_record/1)
+    })
   end
 
   get "/v1/conversations/:conversation_id/history" do
@@ -966,6 +969,7 @@ defmodule EchsServer.Router do
       cwd: state.cwd,
       status: state.status,
       current_message_id: state.current_message_id,
+      trace_id: state.trace_id,
       current_turn_started_at: iso8601(state.current_turn_started_at_ms),
       queued_turns: length(state.queued_turns),
       steer_queue: length(state.steer_queue),
