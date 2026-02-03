@@ -25,7 +25,10 @@ defmodule EchsCore.Application do
       {EchsCore.TurnLimiter, name: EchsCore.TurnLimiter},
 
       # PubSub for events
-      {Phoenix.PubSub, name: EchsCore.PubSub}
+      {Phoenix.PubSub, name: EchsCore.PubSub},
+
+      # Background sweeper for stuck turns (best-effort)
+      {EchsCore.StuckTurnSweeper, []}
     ]
 
     opts = [strategy: :one_for_one, name: EchsCore.Supervisor]
