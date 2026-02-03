@@ -8,6 +8,7 @@ defmodule EchsCore.Tools.Exec do
   """
 
   use GenServer
+  import Bitwise
 
   require Logger
 
@@ -568,7 +569,14 @@ defmodule EchsCore.Tools.Exec do
   end
 
   defp reason_to_exit_code(:normal), do: 0
-  defp reason_to_exit_code({:exit_status, status}) when is_integer(status), do: status
+
+  defp reason_to_exit_code({:exit_status, raw_status}) when is_integer(raw_status) do
+    case :exec.status(raw_status) do
+      {:status, code} -> code
+      {:signal, _sig, _core} -> 128 + (raw_status &&& 0x7F)
+    end
+  end
+
   defp reason_to_exit_code(_), do: -1
 
   defp maybe_infer_exit_code(nil, os_pid) when is_integer(os_pid) do
