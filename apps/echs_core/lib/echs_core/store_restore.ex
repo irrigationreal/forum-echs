@@ -6,6 +6,7 @@ defmodule EchsCore.StoreRestore do
   @type restore_opt ::
           {:message_limit, pos_integer()}
           | {:history, :all}
+          | {:skip_orphan_cleanup, boolean()}
 
   @spec restore_thread(String.t(), [restore_opt()]) :: {:ok, String.t()} | {:error, term()}
   def restore_thread(thread_id, opts \\ []) when is_binary(thread_id) do
@@ -16,11 +17,12 @@ defmodule EchsCore.StoreRestore do
         {:ok, thread_id}
 
       _ ->
-        restore_from_store(thread_id, message_limit)
+        skip_orphan_cleanup = Keyword.get(opts, :skip_orphan_cleanup, false)
+        restore_from_store(thread_id, message_limit, skip_orphan_cleanup)
     end
   end
 
-  defp restore_from_store(thread_id, message_limit) do
+  defp restore_from_store(thread_id, message_limit, skip_orphan_cleanup) do
     with :ok <- ensure_store_available(),
          :ok <- flush_write_buffer(),
          {:ok, thread} <- EchsStore.get_thread(thread_id),
@@ -62,11 +64,11 @@ defmodule EchsCore.StoreRestore do
 
       case ThreadWorker.create(create_opts) do
         {:ok, ^thread_id} ->
-          cleanup_orphaned_children(thread_id)
+          unless skip_orphan_cleanup, do: cleanup_orphaned_children(thread_id)
           {:ok, thread_id}
 
         {:ok, other_id} ->
-          cleanup_orphaned_children(other_id)
+          unless skip_orphan_cleanup, do: cleanup_orphaned_children(other_id)
           {:ok, other_id}
 
         {:error, {:already_started, _pid}} ->
@@ -81,6 +83,8 @@ defmodule EchsCore.StoreRestore do
   # Kill any child threads that survived the parent crash. These orphans are
   # still running under DynamicSupervisor but have no parent monitoring them.
   defp cleanup_orphaned_children(parent_thread_id) do
+    require Logger
+
     Registry.select(EchsCore.Registry, [{{:"$1", :"$2", :_}, [], [{{:"$1", :"$2"}}]}])
     |> Enum.each(fn {child_id, _pid} ->
       if child_id != parent_thread_id do
@@ -88,10 +92,15 @@ defmodule EchsCore.StoreRestore do
           state = ThreadWorker.get_state(child_id)
 
           if state.parent_thread_id == parent_thread_id do
+            Logger.warning(
+              "cleanup_orphaned_children: killing orphan child_id=#{child_id} parent=#{parent_thread_id}"
+            )
             ThreadWorker.kill(child_id)
           end
         catch
-          :exit, _ -> :ok
+          :exit, reason ->
+            Logger.debug("cleanup_orphaned_children: exit #{inspect(reason)} for #{child_id}")
+            :ok
         end
       end
     end)

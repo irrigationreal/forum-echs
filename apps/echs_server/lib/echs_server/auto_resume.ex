@@ -23,8 +23,11 @@ defmodule EchsServer.AutoResume do
       limit = auto_resume_limit()
       threads = EchsStore.list_threads(limit: limit)
 
+      # During auto-resume, skip orphan cleanup to prevent killing threads
+      # that were restored before their parent. Orphan cleanup is meant for
+      # threads that survived a crash, not for threads being restored together.
       Enum.each(threads, fn thread ->
-        case EchsCore.StoreRestore.restore_thread(thread.thread_id) do
+        case EchsCore.StoreRestore.restore_thread(thread.thread_id, skip_orphan_cleanup: true) do
           {:ok, _} -> :ok
           {:error, reason} ->
             Logger.warning(
