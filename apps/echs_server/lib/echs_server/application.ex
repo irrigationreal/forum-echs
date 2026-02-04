@@ -22,13 +22,23 @@ defmodule EchsServer.Application do
 
     children =
       if Application.get_env(:echs_server, :start_server, true) do
-        children ++ [{Bandit, bandit_options()}]
+        # Wrap Bandit in its own supervisor with aggressive restart policy
+        bandit_supervisor_spec = %{
+          id: EchsServer.BanditSupervisor,
+          start: {Supervisor, :start_link, [
+            [{Bandit, bandit_options()}],
+            [strategy: :one_for_one, max_restarts: 100, max_seconds: 60]
+          ]},
+          type: :supervisor,
+          restart: :permanent
+        }
+        children ++ [bandit_supervisor_spec]
       else
         children
       end
 
     # rest_for_one: if a registry crashes, downstream supervisors restart
-    opts = [strategy: :rest_for_one, name: EchsServer.Supervisor]
+    opts = [strategy: :rest_for_one, name: EchsServer.Supervisor, max_restarts: 10, max_seconds: 60]
 
     if Application.get_env(:echs_server, :start_server, true) do
       Logger.info(
