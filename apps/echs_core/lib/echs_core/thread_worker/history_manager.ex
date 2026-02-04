@@ -84,9 +84,77 @@ defmodule EchsCore.ThreadWorker.HistoryManager do
     end)
     |> drop_orphan_function_call_outputs()
     |> drop_orphan_function_calls()
+    |> merge_consecutive_messages()
   end
 
   def sanitize_api_history(other), do: other
+
+  # -------------------------------------------------------------------
+  # Consecutive message merging
+  # -------------------------------------------------------------------
+
+  @doc """
+  Merge consecutive messages with the same role into a single message.
+  This is required because most LLM APIs expect alternating user/assistant
+  messages and may fail or return empty responses when given multiple
+  consecutive messages from the same role.
+  """
+  def merge_consecutive_messages(items) when is_list(items) do
+    items
+    |> Enum.reduce([], fn item, acc ->
+      case {acc, item} do
+        # First item: just prepend
+        {[], _} ->
+          [item]
+
+        # Not a message type: just prepend
+        {_, %{"type" => type}} when type != "message" ->
+          [item | acc]
+
+        # Current item is a message - check if we should merge
+        {[prev | rest], %{"type" => "message", "role" => curr_role, "content" => curr_content}} ->
+          case prev do
+            %{"type" => "message", "role" => prev_role, "content" => prev_content}
+            when prev_role == curr_role ->
+              # Same role: merge content
+              merged_content = merge_message_content(prev_content, curr_content)
+              merged = Map.put(prev, "content", merged_content)
+              [merged | rest]
+
+            _ ->
+              # Different role or previous wasn't a message: just prepend
+              [item | acc]
+          end
+
+        # Anything else: just prepend
+        _ ->
+          [item | acc]
+      end
+    end)
+    |> Enum.reverse()
+  end
+
+  def merge_consecutive_messages(other), do: other
+
+  defp merge_message_content(prev, curr) when is_list(prev) and is_list(curr) do
+    # Add a separator between merged content blocks
+    separator = %{"type" => "text", "text" => "\n\n---\n\n"}
+    prev ++ [separator] ++ curr
+  end
+
+  defp merge_message_content(prev, curr) when is_binary(prev) and is_binary(curr) do
+    prev <> "\n\n---\n\n" <> curr
+  end
+
+  defp merge_message_content(prev, curr) when is_binary(prev) and is_list(curr) do
+    [%{"type" => "text", "text" => prev}, %{"type" => "text", "text" => "\n\n---\n\n"}] ++ curr
+  end
+
+  defp merge_message_content(prev, curr) when is_list(prev) and is_binary(curr) do
+    prev ++ [%{"type" => "text", "text" => "\n\n---\n\n"}, %{"type" => "text", "text" => curr}]
+  end
+
+  defp merge_message_content(_prev, curr), do: curr
 
   # -------------------------------------------------------------------
   # Tool output truncation

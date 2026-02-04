@@ -1,6 +1,8 @@
 defmodule EchsServer.Conversations do
   @moduledoc false
 
+  require Logger
+
   alias EchsServer.ConversationEventBuffer
 
   @default_model "gpt-5.2-codex"
@@ -344,8 +346,28 @@ defmodule EchsServer.Conversations do
     with {:ok, items} <- store_load_history(thread_id) do
       usage_ratio = usage_ratio_for_thread(thread_id, conversation.model, config.threshold)
       estimated = estimate_context_chars(items) + estimate_content_chars(content)
+      item_count = length(items)
+
+      # Count function calls specifically - too many can break APIs
+      function_call_count =
+        Enum.count(items, fn item -> item["type"] in ["function_call", "local_shell_call"] end)
 
       cond do
+        # Compact if too many items (>500) or too many function calls (>200)
+        item_count > config.max_items ->
+          Logger.info(
+            "Compacting due to item count: #{item_count} > #{config.max_items} thread_id=#{thread_id}"
+          )
+
+          maybe_compact_with_summary(conversation, thread_id, content, items, config)
+
+        function_call_count > config.max_function_calls ->
+          Logger.info(
+            "Compacting due to function calls: #{function_call_count} > #{config.max_function_calls} thread_id=#{thread_id}"
+          )
+
+          maybe_compact_with_summary(conversation, thread_id, content, items, config)
+
         is_number(usage_ratio) and usage_ratio < config.threshold ->
           {:ok, thread_id, content}
 
@@ -672,7 +694,10 @@ defmodule EchsServer.Conversations do
       summary_model: System.get_env("ECHS_COMPACTION_SUMMARY_MODEL") || "haiku",
       summary_max_chars: env_int("ECHS_COMPACTION_MAX_SOURCE_CHARS", 120_000),
       last_messages: env_int("ECHS_COMPACTION_LAST_MESSAGES", 3),
-      last_reasoning: env_int("ECHS_COMPACTION_LAST_REASONING", 10)
+      last_reasoning: env_int("ECHS_COMPACTION_LAST_REASONING", 10),
+      # Item count limits - too many items/function calls can break LLM APIs
+      max_items: env_int("ECHS_COMPACTION_MAX_ITEMS", 500),
+      max_function_calls: env_int("ECHS_COMPACTION_MAX_FUNCTION_CALLS", 200)
     }
   end
 
