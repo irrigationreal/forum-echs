@@ -14,6 +14,9 @@ defmodule EchsCore.ThreadWorker do
   alias EchsCore.ThreadWorker.StreamRunner, as: TWStream
   alias EchsCore.ThreadWorker.ToolDispatch, as: TWDispatch
 
+  # Time to wait for a polite stream interrupt before force-killing the stream task.
+  @interrupt_force_kill_ms 10_000
+
   defstruct [
     :thread_id,
     :parent_thread_id,
@@ -674,6 +677,9 @@ defmodule EchsCore.ThreadWorker do
       state.stream_pid ->
         state = request_stream_control(state, :interrupt)
         state = %{state | pending_interrupts: [from | state.pending_interrupts]}
+        # If the stream is stuck in an HTTP call, the polite control message will
+        # never be read.  Schedule a forced kill as a backstop.
+        Process.send_after(self(), {:interrupt_timeout, state.stream_ref}, @interrupt_force_kill_ms)
         {:noreply, state}
 
       state.current_message_id != nil ->
@@ -734,6 +740,23 @@ defmodule EchsCore.ThreadWorker do
         state = %{state | pending_slot_ref: nil, current_slot_ref: ref}
         {:noreply, start_stream(state)}
     end
+  end
+
+  @impl true
+  def handle_info({:interrupt_timeout, ref}, state) do
+    # The polite stream control didn't work within the deadline.
+    # Force-kill the stream task; the :DOWN handler will clean up,
+    # mark the message as error, and reply to pending interrupt waiters.
+    if ref == state.stream_ref and state.stream_pid != nil do
+      Logger.warning(
+        "interrupt timeout, force-killing stream thread_id=#{state.thread_id} " <>
+          "message_id=#{state.current_message_id}"
+      )
+
+      Process.exit(state.stream_pid, :kill)
+    end
+
+    {:noreply, state}
   end
 
   @impl true

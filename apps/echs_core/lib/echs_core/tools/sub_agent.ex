@@ -8,7 +8,13 @@ defmodule EchsCore.Tools.SubAgent do
       "type" => "function",
       "name" => "spawn_agent",
       "description" =>
-        "Spawn a sub-agent for a well-scoped task. Returns the agent id to use to communicate with this agent.",
+        "Spawn a sub-agent for a well-scoped task. Returns the agent id. " <>
+          "Use agent_type to select the right model automatically: " <>
+          "'worker' for coding tasks (gpt-5.2-codex/high), " <>
+          "'explorer' for browsing/searching (gpt-5.2/medium), " <>
+          "'research' for deep analysis (gpt-5.2/high), " <>
+          "'simple' for trivial tasks (haiku/medium). " <>
+          "Defaults to gpt-5.2/high. Override with explicit model/reasoning if needed.",
       "strict" => false,
       "parameters" => %{
         "type" => "object",
@@ -20,8 +26,25 @@ defmodule EchsCore.Tools.SubAgent do
           },
           "agent_type" => %{
             "type" => "string",
+            "enum" => ["default", "explorer", "worker", "research", "simple"],
             "description" =>
-              "Optional agent type (default, explorer, worker). Use an explicit type when delegating."
+              "Agent type controls model selection. " <>
+                "worker: coding tasks (gpt-5.2-codex/high). " <>
+                "explorer: browsing, searching, file exploration (gpt-5.2/medium). " <>
+                "research: deep analysis, complex questions (gpt-5.2/high). " <>
+                "simple: trivial tasks, quick lookups (haiku/medium). " <>
+                "default: general purpose (gpt-5.2/high)."
+          },
+          "model" => %{
+            "type" => "string",
+            "description" =>
+              "Override the default model for this agent. " <>
+                "Available: gpt-5.2, gpt-5.2-codex, gpt-5.1-codex-mini, opus, sonnet, haiku."
+          },
+          "reasoning" => %{
+            "type" => "string",
+            "description" =>
+              "Override reasoning effort for this agent. Options: low, medium, high."
           }
         },
         "required" => ["message"],

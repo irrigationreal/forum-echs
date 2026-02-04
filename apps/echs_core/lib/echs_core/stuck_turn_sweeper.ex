@@ -62,19 +62,15 @@ defmodule EchsCore.StuckTurnSweeper do
     thread_id = msg.thread_id
     message_id = msg.message_id
 
-    # If the thread is alive in-memory, send an interrupt instead of directly
-    # modifying DB state. This avoids divergence between DB and GenServer state.
+    # If the thread is alive in-memory, skip it. Live threads manage their own
+    # timeouts and can be interrupted by users/steering. The sweeper should only
+    # clean up orphaned messages from threads that crashed or were killed without
+    # marking their messages as completed/error.
     case Registry.lookup(EchsCore.Registry, thread_id) do
       [{pid, _}] when is_pid(pid) ->
-        Logger.warning(
-          "stuck_turn_sweeper interrupting live thread thread_id=#{thread_id} message_id=#{message_id}"
+        Logger.info(
+          "stuck_turn_sweeper skipping live thread thread_id=#{thread_id} message_id=#{message_id}"
         )
-
-        try do
-          EchsCore.interrupt_thread(thread_id)
-        catch
-          :exit, _ -> :ok
-        end
 
         {0, 0}
 

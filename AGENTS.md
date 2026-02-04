@@ -196,7 +196,10 @@ There are also explicit controls:
 
 - `pause_thread/1` - stops streaming and marks the thread paused
 - `resume_thread/1` - allows new turns
-- `interrupt_thread/1` - stops the current turn at the next safe boundary
+- `interrupt_thread/1` - stops the current turn at the next safe boundary.
+  If the stream task does not respond within 10 seconds (e.g. it is stuck inside
+  an HTTP call on a dead socket), the stream task is force-killed and the thread
+  recovers automatically. See `@interrupt_force_kill_ms` in `ThreadWorker`.
 - `kill_thread/1` - stops the worker and attempts to kill children
 
 ### PubSub Events
@@ -249,6 +252,28 @@ Built-in tools provided by default (see `EchsCore.ThreadWorker.default_tools/0`)
 - sub-agent tools:
   - `spawn_agent`, `send_to_agent`, `wait_agents`, `kill_agent`
   - `blackboard_write`, `blackboard_read`
+
+### Sub-Agent Model Selection
+
+`spawn_agent` accepts `agent_type`, `model`, and `reasoning` parameters.
+`agent_type` controls which model and reasoning level the sub-agent uses:
+
+| agent_type | model          | reasoning | use case                          |
+|------------|----------------|-----------|-----------------------------------|
+| `default`  | gpt-5.2        | high      | general purpose                   |
+| `explorer` | gpt-5.2        | medium    | browsing, searching, exploration  |
+| `worker`   | gpt-5.2-codex  | high      | coding tasks                      |
+| `research` | gpt-5.2        | high      | deep analysis, complex questions  |
+| `simple`   | haiku           | medium    | trivial tasks, quick lookups      |
+
+Resolution order:
+1. Explicit `model`/`reasoning` params (highest priority)
+2. `agent_type` mapping (if agent_type is specified)
+3. Parent thread's model/reasoning (fallback for backward compat)
+
+The mapping is defined in `@subagent_defaults` in
+`EchsCore.ThreadWorker.ToolDispatch` and also exposed via
+`EchsServer.Models.subagent_recommendations/0`.
 
 Notes:
 

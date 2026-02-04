@@ -570,6 +570,29 @@ defmodule EchsCore.ThreadWorker.ToolDispatch do
   # Sub-agent management
   # -------------------------------------------------------------------
 
+  @subagent_defaults %{
+    "explorer" => {"gpt-5.2", "medium"},
+    "worker" => {"gpt-5.2-codex", "high"},
+    "research" => {"gpt-5.2", "high"},
+    "simple" => {"haiku", "medium"},
+    "default" => {"gpt-5.2", "high"}
+  }
+
+  defp resolve_subagent_model(args, state) do
+    agent_type = args["agent_type"]
+
+    {base_model, base_reasoning} =
+      case Map.get(@subagent_defaults, agent_type) do
+        {m, r} -> {m, r}
+        nil -> {state.model, state.reasoning}
+      end
+
+    model = if is_binary(args["model"]) and args["model"] != "", do: args["model"], else: base_model
+    reasoning = ModelInfo.normalize_reasoning(args["reasoning"], base_reasoning)
+
+    {model, reasoning}
+  end
+
   def spawn_subagent(state, args) do
     active_count = map_size(state.children)
     pending_count = :queue.len(state.pending_agent_spawns)
@@ -583,13 +606,13 @@ defmodule EchsCore.ThreadWorker.ToolDispatch do
         # Above soft limit: create thread but queue the message send
         agent_id = generate_id()
         task = args["message"] || args["task"] || ""
-        reasoning = ModelInfo.normalize_reasoning(args["reasoning"], state.reasoning)
+        {model, reasoning} = resolve_subagent_model(args, state)
 
         opts = [
           thread_id: agent_id,
           parent_thread_id: state.thread_id,
           cwd: state.cwd,
-          model: state.model,
+          model: model,
           reasoning: reasoning,
           tools: TWConfig.filter_tools(args["tools"]),
           coordination_mode: parse_coordination(args["coordination"])
@@ -667,14 +690,13 @@ defmodule EchsCore.ThreadWorker.ToolDispatch do
   defp do_spawn_subagent(state, args) do
     agent_id = generate_id()
     task = args["message"] || args["task"] || ""
-
-    reasoning = ModelInfo.normalize_reasoning(args["reasoning"], state.reasoning)
+    {model, reasoning} = resolve_subagent_model(args, state)
 
     opts = [
       thread_id: agent_id,
       parent_thread_id: state.thread_id,
       cwd: state.cwd,
-      model: state.model,
+      model: model,
       reasoning: reasoning,
       tools: TWConfig.filter_tools(args["tools"]),
       coordination_mode: parse_coordination(args["coordination"])

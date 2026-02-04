@@ -38,6 +38,16 @@ defmodule EchsCore.ThreadWorker.Config do
 
   You can spawn sub-agents with `spawn_agent`. Each gets their own context and tools.
 
+  **Agent Types** (controls model selection — pick the right type for the task):
+  - `worker`: Coding tasks — uses gpt-5.2-codex with high reasoning
+  - `explorer`: Browsing, searching, file exploration — uses gpt-5.2 with medium reasoning
+  - `research`: Deep analysis, complex questions — uses gpt-5.2 with high reasoning
+  - `simple`: Trivial tasks, quick lookups — uses haiku with medium reasoning
+  - `default`: General purpose — uses gpt-5.2 with high reasoning
+
+  You can override model/reasoning explicitly if the defaults don't fit. Available models: gpt-5.2, gpt-5.2-codex, gpt-5.1-codex-mini, opus, sonnet, haiku.
+
+  **Coordination modes**:
   **Hierarchical** (default): You control them, they report to you.
   **Blackboard**: Shared state via `blackboard_write`/`blackboard_read`. Great for parallel work on shared data.
   **Peer**: Equal agents working together (use sparingly).
@@ -78,7 +88,7 @@ defmodule EchsCore.ThreadWorker.Config do
   - **Files** (`read_file`, `list_dir`, `grep_files`): inspect code and data rather than guessing; use these for discovery and verification.
   - **Edits** (`apply_patch`): make precise, minimal changes; avoid manual rewriting for large diffs.
   - **Images** (`view_image`): load local images when visual context is required.
-  - **Sub-agents** (`spawn_agent`, `send_input`, `wait`, `close_agent`): parallelize research and analysis. Keep writes/patches serialized in the parent.
+  - **Sub-agents** (`spawn_agent`, `send_input`, `wait`, `close_agent`): parallelize research and analysis. Keep writes/patches serialized in the parent. Use agent_type to pick the right model: `worker` for coding (gpt-5.2-codex), `explorer` for browsing (gpt-5.2/medium), `research` for analysis (gpt-5.2/high), `simple` for trivial tasks (haiku).
   - **Coordination** (`blackboard_write`, `blackboard_read`): share state between sub-agents; use for summaries and decisions.
 
   When in doubt, verify with tools before answering.
