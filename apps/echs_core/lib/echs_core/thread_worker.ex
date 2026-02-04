@@ -1510,7 +1510,8 @@ defmodule EchsCore.ThreadWorker do
   end
 
   defp touch(state) do
-    %{state | last_activity_at_ms: now_ms()}
+    # Use Map.put to handle old states that may lack this field
+    Map.put(state, :last_activity_at_ms, now_ms())
   end
 
   defp clamp_int(value, min, max) when is_integer(value) do

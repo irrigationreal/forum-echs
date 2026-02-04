@@ -627,7 +627,19 @@ defmodule EchsServer.Router do
   end
 
   defp sse_event(event, data, id \\ nil) do
-    json = Jason.encode!(data)
+    json =
+      case Jason.encode(data) do
+        {:ok, encoded} ->
+          encoded
+
+        {:error, _reason} ->
+          # Fallback: convert to inspected string if data can't be encoded
+          # This prevents crashes when error tuples leak into event data
+          Jason.encode!(%{
+            error: "encoding_failed",
+            inspected: inspect(data, limit: 500, printable_limit: 1000)
+          })
+      end
 
     id_line =
       case id do

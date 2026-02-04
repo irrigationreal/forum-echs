@@ -340,7 +340,8 @@ defmodule EchsCore.ThreadWorker.HistoryManager do
 
       _ ->
         next = %{state | history_items: state.history_items ++ items}
-        next = %{next | last_activity_at_ms: System.system_time(:millisecond)}
+        # Use Map.put to handle old states that may lack this field
+        next = Map.put(next, :last_activity_at_ms, System.system_time(:millisecond))
 
         if TWPersist.store_enabled?() do
           _ = EchsStore.append_items(state.thread_id, Map.get(state, :current_message_id), items)
