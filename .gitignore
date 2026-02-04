@@ -26,3 +26,5 @@ erl_crash.dump
 
 # Git worktrees
 /.worktrees/
+apps/echs_bash_parser/native/echs_bash_parser/target/
+apps/echs_bash_parser/priv/
