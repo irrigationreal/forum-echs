@@ -448,7 +448,10 @@ defmodule EchsCore.ThreadWorker.Config do
     Enum.reject(tools, &tool_matches?(&1, name))
   end
 
+  def filter_tools(nil, model), do: core_tools(model)
   def filter_tools(nil), do: default_subagent_tools()
+
+  def filter_tools(names, _model), do: filter_tools(names)
 
   def filter_tools(names) when is_list(names) do
     base = [

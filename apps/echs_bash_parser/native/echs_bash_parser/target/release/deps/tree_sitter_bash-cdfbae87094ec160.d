@@ -1,0 +1,9 @@
+/root/projects/forum-echs/apps/echs_bash_parser/native/echs_bash_parser/target/release/deps/tree_sitter_bash-cdfbae87094ec160.d: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-bash-0.23.3/bindings/rust/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-bash-0.23.3/bindings/rust/../../src/node-types.json /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-bash-0.23.3/bindings/rust/../../queries/highlights.scm
+
+/root/projects/forum-echs/apps/echs_bash_parser/native/echs_bash_parser/target/release/deps/libtree_sitter_bash-cdfbae87094ec160.rlib: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-bash-0.23.3/bindings/rust/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-bash-0.23.3/bindings/rust/../../src/node-types.json /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-bash-0.23.3/bindings/rust/../../queries/highlights.scm
+
+/root/projects/forum-echs/apps/echs_bash_parser/native/echs_bash_parser/target/release/deps/libtree_sitter_bash-cdfbae87094ec160.rmeta: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-bash-0.23.3/bindings/rust/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-bash-0.23.3/bindings/rust/../../src/node-types.json /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-bash-0.23.3/bindings/rust/../../queries/highlights.scm
+
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-bash-0.23.3/bindings/rust/lib.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-bash-0.23.3/bindings/rust/../../src/node-types.json:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-bash-0.23.3/bindings/rust/../../queries/highlights.scm:

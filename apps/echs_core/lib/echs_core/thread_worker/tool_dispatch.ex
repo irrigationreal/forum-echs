@@ -702,7 +702,7 @@ defmodule EchsCore.ThreadWorker.ToolDispatch do
           cwd: state.cwd,
           model: model,
           reasoning: reasoning,
-          tools: TWConfig.filter_tools(args["tools"]),
+          tools: TWConfig.filter_tools(args["tools"], model),
           coordination_mode: parse_coordination(args["coordination"])
         ]
 

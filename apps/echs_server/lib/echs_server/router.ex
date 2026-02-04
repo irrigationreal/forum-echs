@@ -610,11 +610,19 @@ defmodule EchsServer.Router do
   defp stream_loop(conn) do
     receive do
       {:event, id, event_type, data} ->
-        payload = sse_event(to_string(event_type), data, id)
+        try do
+          payload = sse_event(to_string(event_type), data, id)
 
-        case chunk(conn, payload) do
-          {:ok, conn} -> stream_loop(conn)
-          {:error, _} -> conn
+          case chunk(conn, payload) do
+            {:ok, conn} -> stream_loop(conn)
+            {:error, _} -> conn
+          end
+        rescue
+          e ->
+            require Logger
+            Logger.error("SSE stream_loop error: #{inspect(e)}")
+            # Continue the loop despite the error
+            stream_loop(conn)
         end
     after
       15_000 ->

@@ -32,7 +32,8 @@ defmodule EchsServer.Application do
           type: :supervisor,
           restart: :permanent
         }
-        children ++ [bandit_supervisor_spec]
+        # Watchdog monitors Bandit health and restarts it if unresponsive
+        children ++ [bandit_supervisor_spec, EchsServer.BanditWatchdog]
       else
         children
       end
