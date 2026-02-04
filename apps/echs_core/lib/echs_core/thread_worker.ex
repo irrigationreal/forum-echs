@@ -368,7 +368,7 @@ defmodule EchsCore.ThreadWorker do
       model: model,
       reasoning: ModelInfo.normalize_reasoning(Keyword.get(opts, :reasoning, "medium")),
       cwd: cwd,
-      instructions: TWConfig.build_instructions(Keyword.get(opts, :instructions), cwd),
+      instructions: TWConfig.build_instructions(Keyword.get(opts, :instructions), cwd, parent_thread_id: parent_thread_id),
       tools: Keyword.get(opts, :tools, TWConfig.default_tools(model)),
       history_items: history_items,
       status: :idle,

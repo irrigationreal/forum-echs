@@ -15,37 +15,125 @@ defmodule EchsCore.ThreadWorker.ToolDispatch do
   @soft_subagent_limit 10
   @hard_subagent_limit 20
 
+  @parallel_safe_tools MapSet.new([
+    "shell", "shell_command", "exec_command",
+    "read_file", "list_dir", "grep_files",
+    "blackboard_read", "view_image"
+  ])
+
   # -------------------------------------------------------------------
   # Main entry point
   # -------------------------------------------------------------------
 
   def execute_tool_calls(state, tool_calls) do
-    Enum.map_reduce(tool_calls, state, fn call, acc_state ->
-      {result, next_state} = execute_tool_call(acc_state, call)
-      call_id = call["call_id"] || call["id"]
+    groups = group_tool_calls(tool_calls)
 
-      output_type =
-        case call["type"] do
-          "custom_tool_call" -> "custom_tool_call_output"
-          _ -> "function_call_output"
-        end
+    Enum.flat_map_reduce(groups, state, fn group, acc_state ->
+      {calls, is_parallel} = unzip_group(group)
 
-      formatted = format_tool_result(result)
-
-      broadcast(acc_state, :tool_completed, %{
-        thread_id: acc_state.thread_id,
-        call_id: call_id,
-        result: formatted
-      })
-
-      tool_result = %{
-        "type" => output_type,
-        "call_id" => call_id,
-        "output" => formatted
-      }
-
-      {tool_result, next_state}
+      if is_parallel and length(calls) > 1 do
+        execute_parallel_group(acc_state, calls)
+      else
+        execute_sequential_group(acc_state, calls)
+      end
     end)
+  end
+
+  defp unzip_group(group) do
+    calls = Enum.map(group, &elem(&1, 0))
+    is_parallel = match?([{_, true} | _], group)
+    {calls, is_parallel}
+  end
+
+  defp parallel_safe?(item) do
+    case item["type"] do
+      "local_shell_call" -> true
+      type when type in ["function_call", "custom_tool_call"] ->
+        name = item["name"] || ""
+        MapSet.member?(@parallel_safe_tools, name) or String.starts_with?(name, "forum_")
+      _ -> false
+    end
+  end
+
+  defp group_tool_calls(tool_calls) do
+    Enum.chunk_while(
+      tool_calls,
+      [],
+      fn call, acc ->
+        is_par = parallel_safe?(call)
+        case acc do
+          [] -> {:cont, [{call, is_par}]}
+          [{_, true} | _] when is_par -> {:cont, [{call, is_par} | acc]}
+          _ -> {:cont, Enum.reverse(acc), [{call, is_par}]}
+        end
+      end,
+      fn
+        [] -> {:cont, []}
+        acc -> {:cont, Enum.reverse(acc), []}
+      end
+    )
+  end
+
+  defp execute_parallel_group(state, calls) do
+    tasks =
+      Enum.map(calls, fn call ->
+        Task.async(fn ->
+          try do
+            execute_tool_call(state, call)
+          rescue
+            e -> {{:error, "#{tool_label(call)} crashed: #{Exception.message(e)}"}, state}
+          catch
+            kind, reason -> {{:error, "#{tool_label(call)} #{kind}: #{inspect(reason)}"}, state}
+          end
+        end)
+      end)
+
+    timeout = max_tool_timeout_ms() + 5_000
+
+    results =
+      Task.yield_many(tasks, timeout: timeout)
+      |> Enum.zip(calls)
+      |> Enum.map(fn {{task, outcome}, call} ->
+        {result, _returned_state} =
+          case outcome do
+            {:ok, {result, rstate}} -> {result, rstate}
+            {:exit, reason} -> {{:error, "#{tool_label(call)} crashed: #{inspect(reason)}"}, state}
+            nil ->
+              Task.shutdown(task, :brutal_kill)
+              {{:error, "#{tool_label(call)} timed out"}, state}
+          end
+        build_tool_output(state, call, result)
+      end)
+
+    # Parallel tools don't modify state
+    {results, state}
+  end
+
+  defp execute_sequential_group(state, calls) do
+    Enum.map_reduce(calls, state, fn call, acc_state ->
+      {result, next_state} = execute_tool_call(acc_state, call)
+      {build_tool_output(acc_state, call, result), next_state}
+    end)
+  end
+
+  defp build_tool_output(state, call, result) do
+    call_id = call["call_id"] || call["id"]
+
+    output_type =
+      case call["type"] do
+        "custom_tool_call" -> "custom_tool_call_output"
+        _ -> "function_call_output"
+      end
+
+    formatted = format_tool_result(result)
+
+    broadcast(state, :tool_completed, %{
+      thread_id: state.thread_id,
+      call_id: call_id,
+      result: formatted
+    })
+
+    %{"type" => output_type, "call_id" => call_id, "output" => formatted}
   end
 
   # -------------------------------------------------------------------
