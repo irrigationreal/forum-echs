@@ -84,7 +84,7 @@ defmodule EchsCore.Tools.ApplyPatch do
 
       - You must include a header with your intended action (Add/Delete/Update)
       - You must prefix new lines with `+` even when creating a new file
-      - File references can only be relative, NEVER ABSOLUTE.
+      - File references can be relative (resolved against the working directory) or absolute.
       """,
       "strict" => false,
       "parameters" => %{

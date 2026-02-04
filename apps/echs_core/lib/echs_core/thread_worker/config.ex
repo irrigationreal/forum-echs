@@ -124,7 +124,7 @@ defmodule EchsCore.ThreadWorker.Config do
   ```
 
   **Rules:**
-  - Paths must be relative, never absolute.
+  - Paths can be relative (resolved against cwd) or absolute.
   - New file lines must start with `+`.
   - Include 3 lines of context above and below each change.
   - Use `@@` with class/function names if 3 lines of context isn't unique enough.
