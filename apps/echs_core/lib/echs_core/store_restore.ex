@@ -29,14 +29,15 @@ defmodule EchsCore.StoreRestore do
          {:ok, history_items} <- EchsStore.load_all(thread_id) do
       auto_resume? = auto_resume_enabled?()
 
-      if not auto_resume? do
-        # A daemon restart can leave messages stuck in "running". Mark those as
-        # error so status queries stay honest. We do *not* mark queued messages
-        # because those can be replayed.
-        _ = EchsStore.mark_incomplete_messages(thread_id, include_queued: false)
-      end
-
+      # Read messages BEFORE marking incomplete so build_queues can see "running" status
       messages = EchsStore.list_messages(thread_id, limit: message_limit)
+
+      # A daemon restart can leave messages stuck in "running". ALWAYS mark those
+      # as interrupted so status queries stay honest. We do *not* mark queued messages
+      # because those can be replayed via queued_turns.
+      # Note: This happens AFTER reading messages so build_queues can still extract
+      # resume_turns from messages that were running with valid request_json.
+      _ = EchsStore.mark_incomplete_messages(thread_id, include_queued: false, error: "daemon restarted")
 
       {message_ids, message_log} = build_message_cache(messages)
       {resume_turns, queued_turns, steer_queue} = build_queues(messages, auto_resume?)

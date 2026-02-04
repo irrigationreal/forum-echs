@@ -982,21 +982,21 @@ defmodule EchsServer.Router do
     %{
       thread_id: state.thread_id,
       parent_thread_id: state.parent_thread_id,
-      created_at: iso8601(state.created_at_ms),
-      last_activity_at: iso8601(state.last_activity_at_ms),
-      model: state.model,
-      reasoning: state.reasoning,
-      cwd: state.cwd,
-      status: state.status,
-      current_message_id: state.current_message_id,
-      trace_id: state.trace_id,
-      current_turn_started_at: iso8601(state.current_turn_started_at_ms),
-      queued_turns: length(state.queued_turns),
-      steer_queue: length(state.steer_queue),
-      history_items: length(state.history_items),
-      coordination_mode: state.coordination_mode,
-      tools: Enum.map(state.tools, fn t -> Map.get(t, "name") || Map.get(t, "type") end),
-      children: Map.keys(state.children)
+      created_at: iso8601(Map.get(state, :created_at_ms)),
+      last_activity_at: iso8601(Map.get(state, :last_activity_at_ms)),
+      model: Map.get(state, :model),
+      reasoning: Map.get(state, :reasoning),
+      cwd: Map.get(state, :cwd),
+      status: Map.get(state, :status),
+      current_message_id: Map.get(state, :current_message_id),
+      trace_id: Map.get(state, :trace_id),
+      current_turn_started_at: iso8601(Map.get(state, :current_turn_started_at_ms)),
+      queued_turns: length(Map.get(state, :queued_turns, [])),
+      steer_queue: length(Map.get(state, :steer_queue, [])),
+      history_items: length(Map.get(state, :history_items, [])),
+      coordination_mode: Map.get(state, :coordination_mode),
+      tools: Enum.map(Map.get(state, :tools, []), fn t -> Map.get(t, "name") || Map.get(t, "type") end),
+      children: Map.keys(Map.get(state, :children, %{}))
     }
   end
 

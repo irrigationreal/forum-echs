@@ -33,7 +33,7 @@ defmodule EchsCore.ThreadWorker.StreamRunner do
 
     broadcast_ctx = %{
       thread_id: state.thread_id,
-      current_message_id: state.current_message_id
+      current_message_id: Map.get(state, :current_message_id)
     }
 
     {result, collected_items} =

@@ -782,7 +782,7 @@ defmodule EchsCore.ThreadWorker do
             TWStream.normalize_assistant_items(collected_items, tool_calls == [])
 
           state = TWHistory.append_history_items(state, normalized_items)
-          ctx = %{thread_id: state.thread_id, current_message_id: state.current_message_id}
+          ctx = %{thread_id: state.thread_id, current_message_id: Map.get(state, :current_message_id)}
           TWStream.emit_assistant_events(ctx, assistant_events)
 
           if tool_calls != [] do
@@ -1043,9 +1043,9 @@ defmodule EchsCore.ThreadWorker do
       model: state.model,
       coordination_mode: state.coordination_mode,
       history_items: state.history_items,
-      current_message_id: state.current_message_id,
-      trace_id: state.trace_id,
-      pending_agent_spawns: state.pending_agent_spawns,
+      current_message_id: Map.get(state, :current_message_id),
+      trace_id: Map.get(state, :trace_id),
+      pending_agent_spawns: Map.get(state, :pending_agent_spawns, []),
       parent_thread_id: state.parent_thread_id,
       reasoning: state.reasoning
     }

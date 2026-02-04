@@ -1160,8 +1160,8 @@ defmodule EchsCore.ThreadWorker.ToolDispatch do
   defp broadcast(state, event_type, data) do
     data =
       data
-      |> maybe_put(:message_id, state.current_message_id)
-      |> maybe_put(:trace_id, state.trace_id)
+      |> maybe_put(:message_id, Map.get(state, :current_message_id))
+      |> maybe_put(:trace_id, Map.get(state, :trace_id))
 
     Phoenix.PubSub.broadcast(
       EchsCore.PubSub,
