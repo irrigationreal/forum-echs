@@ -62,19 +62,36 @@ defmodule EchsCore.StuckTurnSweeper do
     thread_id = msg.thread_id
     message_id = msg.message_id
 
-    # If the thread is alive in-memory, skip it. Live threads manage their own
-    # timeouts and can be interrupted by users/steering. The sweeper should only
-    # clean up orphaned messages from threads that crashed or were killed without
-    # marking their messages as completed/error.
     case Registry.lookup(EchsCore.Registry, thread_id) do
       [{pid, _}] when is_pid(pid) ->
-        Logger.info(
-          "stuck_turn_sweeper skipping live thread thread_id=#{thread_id} message_id=#{message_id}"
-        )
-
-        {0, 0}
+        # Thread is alive — check if it's a zombie (stuck in :running with no
+        # recent activity). If so, interrupt it to break the deadlock.
+        maybe_interrupt_zombie(thread_id, message_id, now_ms)
 
       _ ->
+        repair_orphaned_message(thread_id, message_id, now_ms)
+    end
+  end
+
+  defp maybe_interrupt_zombie(thread_id, message_id, now_ms) do
+    try do
+      state = EchsCore.ThreadWorker.get_state(thread_id)
+      last_activity = Map.get(state, :last_activity_at_ms, 0) || 0
+      age_ms = now_ms - last_activity
+
+      if state.status == :running and age_ms > @default_max_age_ms do
+        Logger.warning(
+          "stuck_turn_sweeper: interrupting zombie thread thread_id=#{thread_id} message_id=#{message_id} idle_ms=#{age_ms}"
+        )
+
+        _ = EchsCore.ThreadWorker.interrupt(thread_id)
+        {0, 0}
+      else
+        {0, 0}
+      end
+    catch
+      :exit, _ ->
+        # Thread died between Registry lookup and get_state — treat as orphaned
         repair_orphaned_message(thread_id, message_id, now_ms)
     end
   end

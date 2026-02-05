@@ -924,6 +924,21 @@ defmodule EchsCore.ThreadWorker do
 
     state = cancel_stream(state, reason, reply?: false)
     state = state |> release_turn_slot() |> clear_pending_slot()
+
+    # Persist any running message as error and save final thread state so that
+    # the store doesn't keep messages stuck in :running after a crash.
+    try do
+      if is_binary(Map.get(state, :current_message_id)) do
+        _ = TWPersist.persist_message(state, state.current_message_id)
+      end
+
+      _ = TWPersist.persist_thread(state)
+    rescue
+      _ -> :ok
+    catch
+      _, _ -> :ok
+    end
+
     broadcast(state, :thread_terminated, %{thread_id: state.thread_id, reason: reason})
     :ok
   end

@@ -11,7 +11,8 @@ defmodule EchsCore.InfraSupervisor do
   def init(_opts) do
     children = [
       {EchsCore.Tools.Exec, name: EchsCore.Tools.Exec},
-      {EchsCore.StuckTurnSweeper, []}
+      {EchsCore.StuckTurnSweeper, []},
+      {EchsCore.ThreadHealthMonitor, []}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

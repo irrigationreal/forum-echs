@@ -187,7 +187,13 @@ defmodule EchsServer.Conversations do
           :ok ->
             {:ok, thread_id}
 
-          {:error, :not_found} ->
+          {:error, _reason} ->
+            # Thread is dead or unrestorable — clear the stale reference so we
+            # don't keep trying to load it, and create a fresh thread.
+            if store_enabled?() do
+              _ = EchsStore.update_conversation_active_thread(conversation.conversation_id, nil)
+            end
+
             create_and_attach_thread(conversation)
         end
 
@@ -253,9 +259,15 @@ defmodule EchsServer.Conversations do
 
       :not_found ->
         case EchsCore.restore_thread(thread_id) do
-          {:ok, _} -> :ok
-          {:error, :not_found} -> {:error, :not_found}
-          {:error, reason} -> {:error, reason}
+          {:ok, _} ->
+            :ok
+
+          {:error, reason} ->
+            Logger.warning(
+              "ensure_thread_loaded: restore failed thread_id=#{thread_id} reason=#{inspect(reason)}"
+            )
+
+            {:error, :not_found}
         end
     end
   end
@@ -344,7 +356,7 @@ defmodule EchsServer.Conversations do
     config = compaction_config()
 
     with {:ok, items} <- store_load_history(thread_id) do
-      usage_ratio = usage_ratio_for_thread(thread_id, conversation.model, config.threshold)
+      usage_ratio = usage_ratio_for_thread(thread_id, conversation.model, items)
       estimated = estimate_context_chars(items) + estimate_content_chars(content)
       item_count = length(items)
 
@@ -386,33 +398,46 @@ defmodule EchsServer.Conversations do
   end
 
   defp maybe_compact_with_summary(conversation, thread_id, content, items, config) do
-    case build_compaction_message(conversation, items, content, config) do
+    case build_compaction_message(conversation, thread_id, items, content, config) do
       {:ok, compacted_content} ->
         case create_and_attach_thread(%{conversation | active_thread_id: nil}) do
           {:ok, new_thread_id} ->
+            Logger.info(
+              "Compaction succeeded: old=#{thread_id} new=#{new_thread_id} conv=#{conversation.conversation_id}"
+            )
+
             {:ok, new_thread_id, compacted_content}
 
-          {:error, _} ->
-            # Compaction failed — fall back to the original thread so we never
-            # leave the conversation pointing at an orphaned/missing thread.
+          {:error, reason} ->
+            Logger.warning(
+              "Compaction thread creation failed: reason=#{inspect(reason)} thread_id=#{thread_id}"
+            )
+
             {:ok, thread_id, content}
         end
 
-      {:error, _} ->
+      {:error, reason} ->
+        Logger.warning(
+          "Compaction summary failed: reason=#{inspect(reason)} thread_id=#{thread_id} conv=#{conversation.conversation_id}"
+        )
+
         {:ok, thread_id, content}
     end
   end
 
-  defp build_compaction_message(conversation, items, latest_content, config) do
+  defp build_compaction_message(conversation, old_thread_id, items, latest_content, config) do
     transcript = build_transcript(items, config.summary_max_chars)
 
     summary =
       case compaction_mode(conversation.model) do
         :remote ->
+          # API expects input as a list of ResponseItems, not a plain string
+          input_items = [%{"type" => "message", "role" => "user", "content" => transcript}]
+
           case EchsCodex.compact(
                  model: conversation.model,
                  instructions: compaction_instructions(),
-                 input: transcript
+                 input: input_items
                ) do
             {:ok, %{output: output}} -> output
             {:error, reason} -> {:error, reason}
@@ -436,6 +461,9 @@ defmodule EchsServer.Conversations do
         message =
           [
             "[CONTEXT SUMMARY]",
+            "[COMPACTED FROM: #{old_thread_id}]",
+            "Use recall_thread_history tool if you need specific details from the original conversation.",
+            "",
             output,
             recent_messages,
             reasoning,
@@ -701,15 +729,30 @@ defmodule EchsServer.Conversations do
     }
   end
 
-  defp usage_ratio_for_thread(thread_id, model, _threshold) do
+  # Returns {usage_ratio, predicted_tokens} or nil
+  # The usage_ratio accounts for history growth since last_usage was recorded
+  defp usage_ratio_for_thread(thread_id, model, items) do
     case safe_get_state(thread_id) do
       {:ok, state} ->
         usage = Map.get(state, :last_usage)
-        prompt_tokens = extract_prompt_tokens(usage)
+        last_input_tokens = extract_prompt_tokens(usage)
         window = EchsServer.Models.context_window_tokens(model || @default_model)
 
-        if is_integer(prompt_tokens) and window > 0 do
-          prompt_tokens / window
+        if window > 0 do
+          # Estimate tokens from current history (roughly 4 chars per token)
+          estimated_chars = estimate_context_chars(items)
+          estimated_tokens = div(estimated_chars, 4)
+
+          # Use the higher of: last known token count OR estimated from history
+          # This catches cases where history grew significantly since last API call
+          predicted_tokens =
+            if is_integer(last_input_tokens) do
+              max(last_input_tokens, estimated_tokens)
+            else
+              estimated_tokens
+            end
+
+          predicted_tokens / window
         else
           nil
         end
