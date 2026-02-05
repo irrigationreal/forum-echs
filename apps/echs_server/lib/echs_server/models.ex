@@ -13,7 +13,7 @@ defmodule EchsServer.Models do
       "context_window_tokens" => 200_000
     },
     %{
-      "id" => "gpt-5.2-codex",
+      "id" => "gpt-5.3-codex",
       "family" => "codex",
       "supports_reasoning" => true,
       "supports_tools" => true,
@@ -64,7 +64,7 @@ defmodule EchsServer.Models do
   @subagent_recommendations %{
     "default" => %{"model" => "gpt-5.2", "reasoning" => "high", "use_case" => "general purpose"},
     "explorer" => %{"model" => "gpt-5.2", "reasoning" => "medium", "use_case" => "browsing, searching, file exploration"},
-    "worker" => %{"model" => "gpt-5.2-codex", "reasoning" => "high", "use_case" => "coding tasks"},
+    "worker" => %{"model" => "gpt-5.3-codex", "reasoning" => "high", "use_case" => "coding tasks"},
     "research" => %{"model" => "gpt-5.2", "reasoning" => "high", "use_case" => "deep analysis, complex questions"},
     "simple" => %{"model" => "haiku", "reasoning" => "medium", "use_case" => "trivial tasks, quick lookups"}
   }

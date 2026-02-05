@@ -62,8 +62,8 @@ defmodule EchsCore.ModelSwapStreamTest do
     assert stats.turn_delta > 0
     assert stats.reasoning_delta > 0
 
-    :ok = ThreadWorker.configure(thread_id, %{"model" => "gpt-5.2-codex"})
-    assert ThreadWorker.get_state(thread_id).model == "gpt-5.2-codex"
+    :ok = ThreadWorker.configure(thread_id, %{"model" => "gpt-5.3-codex"})
+    assert ThreadWorker.get_state(thread_id).model == "gpt-5.3-codex"
 
     {:ok, _} = ThreadWorker.test_apply_sse_events(thread_id, codex_events)
     stats = collect_events()

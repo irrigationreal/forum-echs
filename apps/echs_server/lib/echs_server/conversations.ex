@@ -5,7 +5,7 @@ defmodule EchsServer.Conversations do
 
   alias EchsServer.ConversationEventBuffer
 
-  @default_model "gpt-5.2-codex"
+  @default_model "gpt-5.3-codex"
   @default_reasoning "medium"
   @default_coordination "hierarchical"
 

@@ -10,7 +10,7 @@ defmodule EchsStoreTest do
         parent_thread_id: nil,
         created_at_ms: System.system_time(:millisecond),
         last_activity_at_ms: System.system_time(:millisecond),
-        model: "gpt-5.2-codex",
+        model: "gpt-5.3-codex",
         reasoning: "medium",
         cwd: "/tmp",
         instructions: "hi",

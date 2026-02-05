@@ -668,7 +668,7 @@ defmodule EchsCore.ThreadWorker.ToolDispatch do
 
   @subagent_defaults %{
     "explorer" => {"gpt-5.2", "medium"},
-    "worker" => {"gpt-5.2-codex", "high"},
+    "worker" => {"gpt-5.3-codex", "high"},
     "research" => {"gpt-5.2", "high"},
     "simple" => {"haiku", "medium"},
     "default" => {"gpt-5.2", "high"}

@@ -25,7 +25,7 @@ is disabled.
 {:ok, _} = Application.ensure_all_started(:echs_codex)
 
 EchsCodex.stream_response(
-  model: "gpt-5.2-codex",
+  model: "gpt-5.3-codex",
   instructions: "Be concise",
   input: [],
   tools: [],

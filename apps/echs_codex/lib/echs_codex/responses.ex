@@ -9,7 +9,7 @@ defmodule EchsCodex.Responses do
   @default_base_url "https://codex.ppflix.net/v1/responses"
   @default_compact_url "https://codex.ppflix.net/v1/responses/compact"
 
-  @default_model "gpt-5.2-codex"
+  @default_model "gpt-5.3-codex"
   @max_error_body_bytes 50_000
   # 10-minute safety net for hung connections (the stream task handles its own
   # cancellation, but this prevents infinite hangs if the API silently drops).
@@ -19,7 +19,7 @@ defmodule EchsCodex.Responses do
   Stream a response from the Codex API.
 
   Options:
-    - :model - model to use (default: gpt-5.2-codex)
+    - :model - model to use (default: gpt-5.3-codex)
     - :instructions - system prompt
     - :input - list of input items (history)
     - :tools - list of tool definitions
@@ -73,7 +73,7 @@ defmodule EchsCodex.Responses do
   Compact conversation history via the compaction endpoint.
 
   Options:
-    - :model - model to use (default: gpt-5.2-codex)
+    - :model - model to use (default: gpt-5.3-codex)
     - :instructions - system prompt
     - :input - list of input items (history)
     - :req_opts - extra Req options (ex: retry/max_retries/plug for tests)

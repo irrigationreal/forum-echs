@@ -154,12 +154,12 @@ defmodule EchsCore.ThreadWorker.Config do
     - What you already know (relevant context, constraints, decisions made so far)
     - What to return (expected output format and level of detail)
   - `agent_type` (string): controls model selection:
-    - `worker` — coding tasks (gpt-5.2-codex, high reasoning)
+    - `worker` — coding tasks (gpt-5.3-codex, high reasoning)
     - `explorer` — searching, browsing, file exploration (gpt-5.2, medium reasoning)
     - `research` — deep analysis, complex questions (gpt-5.2, high reasoning)
     - `simple` — trivial lookups (haiku, medium reasoning)
     - `default` — general purpose (gpt-5.2, high reasoning)
-  - `model` (string): override model. Available: gpt-5.2, gpt-5.2-codex, gpt-5.1-codex-mini, opus, sonnet, haiku.
+  - `model` (string): override model. Available: gpt-5.2, gpt-5.3-codex, gpt-5.1-codex-mini, opus, sonnet, haiku.
   - `reasoning` (string): override reasoning effort. Options: low, medium, high.
 
   **`wait`** — block until sub-agents reach a final status. Always call before responding.

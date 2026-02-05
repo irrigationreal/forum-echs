@@ -116,7 +116,7 @@ Important helpers:
 `EchsCore.ThreadWorker.create/1` accepts a handful of options worth knowing:
 
 - `:cwd` - thread working directory (defaults to `File.cwd!/0`)
-- `:model` - defaults to `gpt-5.2-codex`
+- `:model` - defaults to `gpt-5.3-codex`
 - `:reasoning` - defaults to `"medium"` (Codex accepts: `none|minimal|low|medium|high|xhigh`)
 - `:instructions` - if omitted, a permissive built-in system prompt is used
 - `:tools` - tool specs to expose (defaults to `default_tools/0`)
@@ -137,7 +137,7 @@ Tools can be modified by name using `"+tool"` and `"-tool"` entries. Example:
 
 ```elixir
 EchsCore.configure_thread(thread_id, %{
-  "model" => "gpt-5.2-codex",
+  "model" => "gpt-5.3-codex",
   "reasoning" => "high",
   "tools" => ["-apply_patch", "+shell"]
 })
@@ -262,7 +262,7 @@ Built-in tools provided by default (see `EchsCore.ThreadWorker.default_tools/0`)
 |------------|----------------|-----------|-----------------------------------|
 | `default`  | gpt-5.2        | high      | general purpose                   |
 | `explorer` | gpt-5.2        | medium    | browsing, searching, exploration  |
-| `worker`   | gpt-5.2-codex  | high      | coding tasks                      |
+| `worker`   | gpt-5.3-codex  | high      | coding tasks                      |
 | `research` | gpt-5.2        | high      | deep analysis, complex questions  |
 | `simple`   | haiku           | medium    | trivial tasks, quick lookups      |
 

@@ -23,7 +23,7 @@ defmodule EchsCore.LongConversationModelSwapTest do
 
     run_swap(thread_id, "opus", claude_events("toolu_opus"), %{reasoning: :positive})
 
-    run_swap(thread_id, "gpt-5.2-codex", codex_events("call_gpt"), %{reasoning: 1})
+    run_swap(thread_id, "gpt-5.3-codex", codex_events("call_gpt"), %{reasoning: 1})
 
     assert length(ThreadWorker.get_state(thread_id).history_items) == length(history_items)
   end

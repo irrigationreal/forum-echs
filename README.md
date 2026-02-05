@@ -143,7 +143,7 @@ curl -s -X POST http://127.0.0.1:4000/v1/threads \\
   -H 'content-type: application/json' \\
   -d '{
     "cwd": "/tmp",
-    "model": "gpt-5.2-codex",
+    "model": "gpt-5.3-codex",
     "reasoning": "medium",
     "instructions": "Be concise"
   }'
@@ -330,7 +330,7 @@ Create a conversation:
 ```bash
 curl -s -X POST http://127.0.0.1:4000/v1/conversations \\
   -H 'content-type: application/json' \\
-  -d '{"model":"gpt-5.2-codex","reasoning":"medium"}'
+  -d '{"model":"gpt-5.3-codex","reasoning":"medium"}'
 ```
 
 Send a message:

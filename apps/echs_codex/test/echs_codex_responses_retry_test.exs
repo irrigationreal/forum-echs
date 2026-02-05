@@ -57,7 +57,7 @@ defmodule EchsCodex.ResponsesRetryTest do
 
     assert {:ok, %{status: 200}} =
              Responses.stream_response(
-               model: "gpt-5.2-codex",
+               model: "gpt-5.3-codex",
                instructions: "test",
                input: [],
                tools: [],
@@ -105,7 +105,7 @@ defmodule EchsCodex.ResponsesRetryTest do
 
     assert {:ok, %{status: 200}} =
              Responses.stream_response(
-               model: "gpt-5.2-codex",
+               model: "gpt-5.3-codex",
                instructions: "test",
                input: [],
                tools: [],
@@ -153,7 +153,7 @@ defmodule EchsCodex.ResponsesRetryTest do
 
     assert {:ok, %{status: 200}} =
              Responses.stream_response(
-               model: "gpt-5.2-codex",
+               model: "gpt-5.3-codex",
                instructions: "test",
                input: [],
                tools: [],
@@ -176,7 +176,7 @@ defmodule EchsCodex.ResponsesRetryTest do
 
     assert {:ok, %{output: output}} =
              Responses.compact(
-               model: "gpt-5.2-codex",
+               model: "gpt-5.3-codex",
                instructions: "test",
                input: [%{"type" => "message", "role" => "user", "content" => []}],
                req_opts: [
@@ -233,7 +233,7 @@ defmodule EchsCodex.ResponsesRetryTest do
 
     assert {:error, %{status: 400, body: body}} =
              Responses.stream_response(
-               model: "gpt-5.2-codex",
+               model: "gpt-5.3-codex",
                instructions: "test",
                input: [],
                tools: [],

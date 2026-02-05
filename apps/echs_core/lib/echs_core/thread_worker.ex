@@ -350,7 +350,7 @@ defmodule EchsCore.ThreadWorker do
     # on "blackboard:#{parent_thread_id}" so only the parent receives them.
     :ok = Phoenix.PubSub.subscribe(EchsCore.PubSub, "blackboard:#{thread_id}")
 
-    model = Keyword.get(opts, :model, "gpt-5.2-codex")
+    model = Keyword.get(opts, :model, "gpt-5.3-codex")
 
     shell_path = System.get_env("SHELL") || "/bin/bash"
 

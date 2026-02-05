@@ -18,7 +18,7 @@ defmodule EchsCore.ModelInfo do
 
   def shell_tool_type(model) when is_binary(model) do
     cond do
-      String.starts_with?(model, "gpt-5.2-codex") ->
+      String.starts_with?(model, "gpt-5.3-codex") ->
         :exec
 
       String.starts_with?(model, "gpt-5.2") ->
@@ -48,7 +48,7 @@ defmodule EchsCore.ModelInfo do
 
   def apply_patch_tool_type(model) when is_binary(model) do
     cond do
-      String.starts_with?(model, "gpt-5.2-codex") ->
+      String.starts_with?(model, "gpt-5.3-codex") ->
         :freeform
 
       String.starts_with?(model, "gpt-5.1-codex") ->
