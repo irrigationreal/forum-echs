@@ -19,6 +19,11 @@ import Config
 #       metadata: [:user_id]
 #
 
+# Ensure OTP supervisor crash reports are visible in logs.
+config :logger,
+  handle_otp_reports: true,
+  handle_sasl_reports: true
+
 # Avoid binding sockets during `mix test` by default.
 config :echs_server,
   start_server: config_env() != :test

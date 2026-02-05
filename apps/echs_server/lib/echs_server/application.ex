@@ -38,8 +38,11 @@ defmodule EchsServer.Application do
         children
       end
 
-    # rest_for_one: if a registry crashes, downstream supervisors restart
-    opts = [strategy: :rest_for_one, name: EchsServer.Supervisor, max_restarts: 10, max_seconds: 60]
+    # one_for_one: each child is independent.  The previous rest_for_one
+    # strategy caused silent Bandit restarts whenever an event-buffer
+    # DynamicSupervisor hit its max_restarts limit — the cascading restart
+    # killed the HTTP listener even though the two are unrelated.
+    opts = [strategy: :one_for_one, name: EchsServer.Supervisor, max_restarts: 10, max_seconds: 60]
 
     if Application.get_env(:echs_server, :start_server, true) do
       Logger.info(
