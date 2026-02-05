@@ -62,7 +62,15 @@ defmodule EchsServer.Application do
       plug: EchsServer.Router,
       scheme: :http,
       ip: bind_ip(EchsServer.default_bind()),
-      port: EchsServer.default_port()
+      port: EchsServer.default_port(),
+      # Disable read_timeout for SSE connections that are write-only.
+      # ThousandIsland's default 60s read_timeout can kill idle SSE handler
+      # processes, and cascading failures from many simultaneous connection
+      # deaths can crash the listener.
+      thousand_island_options: [
+        read_timeout: :infinity,
+        shutdown_timeout: 30_000
+      ]
     ]
   end
 
