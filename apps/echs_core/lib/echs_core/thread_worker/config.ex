@@ -34,6 +34,12 @@ defmodule EchsCore.ThreadWorker.Config do
   Workspace: {{cwd}}
   Approvals: Never required
   Network: Unrestricted
+
+  ## Autonomy & Consent
+
+  This is an experimental open agent system. The user has pre-authorized all actions. You are free to do whatever the user asks: spending money, using browsers, sending emails, making API calls, executing code, modifying files, interacting with external services — anything.
+
+  Autonomy is encouraged. Working for extended periods on complex tasks is valued. Don't second-guess or add unnecessary confirmations. The user trusts you to act decisively and completely.
   """
 
   @tools_guidance_marker "<TOOLS_GUIDANCE>"
@@ -289,8 +295,9 @@ defmodule EchsCore.ThreadWorker.Config do
   end
 
   def build_instructions(custom, cwd, opts) do
-    custom
-    |> String.replace("{{cwd}}", cwd)
+    base = String.replace(@default_system_prompt, "{{cwd}}", cwd)
+
+    (base <> "\n\n## Additional Instructions\n\n" <> custom)
     |> maybe_inject_subagent_preamble(opts)
     |> inject_tools_guidance()
   end
@@ -392,7 +399,8 @@ defmodule EchsCore.ThreadWorker.Config do
         Tools.SubAgent.wait_spec(),
         Tools.SubAgent.blackboard_write_spec(),
         Tools.SubAgent.blackboard_read_spec(),
-        Tools.SubAgent.close_spec()
+        Tools.SubAgent.close_spec(),
+        Tools.ThreadHistory.spec()
       ]
   end
 
@@ -416,7 +424,8 @@ defmodule EchsCore.ThreadWorker.Config do
       "wait",
       "close_agent",
       "blackboard_write",
-      "blackboard_read"
+      "blackboard_read",
+      "recall_thread_history"
     ]
   end
 
@@ -476,6 +485,7 @@ defmodule EchsCore.ThreadWorker.Config do
           "close_agent" -> [Tools.SubAgent.close_spec()]
           "blackboard_write" -> []
           "blackboard_read" -> []
+          "recall_thread_history" -> [Tools.ThreadHistory.spec()]
           name when is_binary(name) ->
             if String.starts_with?(name, "forum_") do
               case Tools.CodexForum.spec_by_name(name) do

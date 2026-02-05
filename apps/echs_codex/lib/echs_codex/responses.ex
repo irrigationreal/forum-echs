@@ -398,14 +398,32 @@ defmodule EchsCodex.Responses do
         url: compact_url(),
         method: :post,
         headers: headers,
-        json: body
+        json: body,
+        # Compaction can take a while for large contexts
+        receive_timeout: @default_receive_timeout_ms
       )
       |> Req.merge(req_opts)
 
     case Req.request(request) do
+      {:ok, %{status: 200, body: body}} when is_map(body) ->
+        EchsCodex.CircuitBreaker.record_success(:codex)
+        {:ok, %{output: extract_compact_output(body["output"])}}
+
+      {:ok, %{status: 200, body: body}} when is_binary(body) ->
+        # Req didn't auto-decode JSON, try manually
+        EchsCodex.CircuitBreaker.record_success(:codex)
+
+        case Jason.decode(body) do
+          {:ok, parsed} when is_map(parsed) ->
+            {:ok, %{output: extract_compact_output(parsed["output"])}}
+
+          _ ->
+            {:error, "failed to parse compact response: #{String.slice(body, 0, 200)}"}
+        end
+
       {:ok, %{status: 200, body: body}} ->
         EchsCodex.CircuitBreaker.record_success(:codex)
-        {:ok, %{output: body["output"]}}
+        {:error, "unexpected compact response body type: #{inspect(body)}"}
 
       {:ok, %{status: 401, body: resp_body}} ->
         if auth_refreshed? do
@@ -490,4 +508,30 @@ defmodule EchsCodex.Responses do
       binary
     end
   end
+
+  # Extract text from compact response output (list of message items)
+  # Format: [%{"type" => "message", "content" => [%{"type" => "input_text", "text" => "..."}]}]
+  defp extract_compact_output(output) when is_list(output) do
+    output
+    |> Enum.flat_map(fn item ->
+      case item do
+        %{"content" => content} when is_list(content) ->
+          Enum.map(content, fn
+            %{"text" => text} when is_binary(text) -> text
+            _ -> ""
+          end)
+
+        %{"content" => content} when is_binary(content) ->
+          [content]
+
+        _ ->
+          []
+      end
+    end)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("\n\n")
+  end
+
+  defp extract_compact_output(output) when is_binary(output), do: output
+  defp extract_compact_output(_), do: ""
 end

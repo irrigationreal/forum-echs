@@ -996,7 +996,9 @@ defmodule EchsServer.Router do
       history_items: length(Map.get(state, :history_items, [])),
       coordination_mode: Map.get(state, :coordination_mode),
       tools: Enum.map(Map.get(state, :tools, []), fn t -> Map.get(t, "name") || Map.get(t, "type") end),
-      children: Map.keys(Map.get(state, :children, %{}))
+      children: Map.keys(Map.get(state, :children, %{})),
+      last_usage: Map.get(state, :last_usage),
+      last_usage_at: iso8601(Map.get(state, :last_usage_at_ms))
     }
   end
 

@@ -421,6 +421,14 @@ defmodule EchsCore.ThreadWorker.ToolDispatch do
       "close_agent" ->
         kill_subagent(state, args)
 
+      "recall_thread_history" ->
+        opts = [
+          offset: args["offset"] || 0,
+          limit: args["limit"] || 100,
+          filter_type: args["filter_type"] || "all"
+        ]
+        {Tools.ThreadHistory.recall(args["thread_id"], opts), state}
+
       name when is_binary(name) ->
         if String.starts_with?(name, "forum_") do
           {Tools.CodexForum.execute(name, args), state}
