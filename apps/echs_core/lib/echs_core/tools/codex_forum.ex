@@ -417,8 +417,7 @@ defmodule EchsCore.Tools.CodexForum do
   defp require_base_token do
     case base_token() do
       nil ->
-        {:error,
-         "Missing forum auth token. Set CODEX_FORUM_MCP_TOKEN or CODEX_FORUM_TOKEN in the ECHS env."}
+        {:error, "Missing forum auth token."}
 
       token ->
         {:ok, token}
@@ -426,6 +425,8 @@ defmodule EchsCore.Tools.CodexForum do
   end
 
   defp base_token do
+    # Forum tools can run without a token if the forum server is configured
+    # to accept internal robot requests.
     System.get_env("CODEX_FORUM_MCP_TOKEN") ||
       System.get_env("CODEX_FORUM_TOKEN")
   end
@@ -597,13 +598,20 @@ defmodule EchsCore.Tools.CodexForum do
     end
   end
 
-  defp build_headers(nil), do: [{"accept", "application/json"}]
+  defp build_headers(nil), do: build_headers("")
 
   defp build_headers(token) do
-    [
-      {"accept", "application/json"},
-      {"authorization", "Bearer #{token}"}
-    ]
+    base = [{"accept", "application/json"}]
+
+    # Internal marker understood by Codex Forum: if enabled server-side,
+    # this bypasses the need for an auth token.
+    base = [{"x-codex-forum-internal-robot", "1"} | base]
+
+    if is_binary(token) and token != "" do
+      [{"authorization", "Bearer #{token}"} | base]
+    else
+      base
+    end
   end
 
   defp api_base_url do
