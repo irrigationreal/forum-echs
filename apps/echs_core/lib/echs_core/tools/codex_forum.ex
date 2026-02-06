@@ -6,7 +6,7 @@ defmodule EchsCore.Tools.CodexForum do
   """
 
   @default_base_url "http://localhost:4310"
-  @default_api_prefix ""
+  @default_api_prefix "/api"
   @impersonation_ttl_seconds 600
   @token_cache :echs_codex_forum_token_cache
 
@@ -607,10 +607,30 @@ defmodule EchsCore.Tools.CodexForum do
   end
 
   defp api_base_url do
-    base = System.get_env("CODEX_FORUM_API_BASE_URL") || @default_base_url
+    base =
+      System.get_env("CODEX_FORUM_API_BASE_URL") ||
+        System.get_env("CODEX_FORUM_BASE_URL") ||
+        @default_base_url
+
     prefix = System.get_env("CODEX_FORUM_API_PREFIX") || @default_api_prefix
 
-    normalize_base(base) <> normalize_prefix(prefix)
+    normalize_base_and_prefix(base, prefix)
+  end
+
+  defp normalize_base_and_prefix(base, prefix) do
+    normalized_base = normalize_base(base)
+    normalized_prefix = normalize_prefix(prefix)
+
+    cond do
+      normalized_prefix == "" ->
+        normalized_base
+
+      String.ends_with?(normalized_base, normalized_prefix) ->
+        normalized_base
+
+      true ->
+        normalized_base <> normalized_prefix
+    end
   end
 
   defp normalize_base(value) do
