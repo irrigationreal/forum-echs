@@ -599,22 +599,23 @@ defmodule EchsServer.Router do
   end
 
   defp stream_conversation_events(conn, conversation_id, last_event_id) do
-    :ok = EchsServer.ConversationEventBuffer.subscribe(conversation_id, last_event_id)
+    {:ok, buffer_pid} = EchsServer.ConversationEventBuffer.subscribe(conversation_id, last_event_id)
+    Process.monitor(buffer_pid)
 
     case chunk(conn, sse_event("ready", %{conversation_id: conversation_id})) do
-      {:ok, conn} -> stream_loop(conn)
+      {:ok, conn} -> stream_loop(conn, %{conversation_id: conversation_id})
       {:error, _} -> conn
     end
   end
 
-  defp stream_loop(conn) do
+  defp stream_loop(conn, opts \\ %{}) do
     receive do
       {:event, id, event_type, data} ->
         try do
           payload = sse_event(to_string(event_type), data, id)
 
           case chunk(conn, payload) do
-            {:ok, conn} -> stream_loop(conn)
+            {:ok, conn} -> stream_loop(conn, opts)
             {:error, _} -> conn
           end
         rescue
@@ -622,16 +623,69 @@ defmodule EchsServer.Router do
             require Logger
             Logger.error("SSE stream_loop error: #{inspect(e)}")
             # Continue the loop despite the error
-            stream_loop(conn)
+            stream_loop(conn, opts)
+        end
+
+      {:DOWN, _ref, :process, _pid, _reason} ->
+        # ConversationEventBuffer died (inactivity timeout or crash).
+        # Re-subscribe to the new instance so events keep flowing.
+        case Map.get(opts, :conversation_id) do
+          nil ->
+            # Thread-level stream — no buffer to reconnect; ignore.
+            stream_loop(conn, opts)
+
+          conversation_id ->
+            case resubscribe_conversation_buffer(conn, conversation_id) do
+              {:ok, conn} -> stream_loop(conn, opts)
+              {:error, _} -> conn
+            end
         end
     after
       15_000 ->
         # Keepalive to prevent some proxies from closing idle streams.
         case chunk(conn, ": keepalive\n\n") do
-          {:ok, conn} -> stream_loop(conn)
+          {:ok, conn} -> stream_loop(conn, opts)
           {:error, _} -> conn
         end
     end
+  end
+
+  defp resubscribe_conversation_buffer(conn, conversation_id) do
+    require Logger
+
+    Logger.warning(
+      "ConversationEventBuffer died, re-subscribing conversation_id=#{conversation_id}"
+    )
+
+    {:ok, new_pid} = EchsServer.ConversationEventBuffer.subscribe(conversation_id)
+    Process.monitor(new_pid)
+
+    # Re-attach the active thread so in-flight turn events are captured
+    case EchsServer.Conversations.get(conversation_id) do
+      {:ok, conversation}
+      when is_binary(conversation.active_thread_id) and conversation.active_thread_id != "" ->
+        EchsServer.ConversationEventBuffer.attach_thread(
+          conversation_id,
+          conversation.active_thread_id
+        )
+
+      _ ->
+        :ok
+    end
+
+    # Notify the client about the gap so it can backfill from history
+    gap_data = %{conversation_id: conversation_id, reason: "buffer_restart"}
+    chunk(conn, sse_event("events_gap", gap_data))
+  rescue
+    e ->
+      require Logger
+      Logger.error("resubscribe_conversation_buffer failed: #{inspect(e)}")
+      {:error, :resubscribe_failed}
+  catch
+    :exit, reason ->
+      require Logger
+      Logger.error("resubscribe_conversation_buffer exit: #{inspect(reason)}")
+      {:error, :resubscribe_failed}
   end
 
   defp sse_event(event, data, id \\ nil) do

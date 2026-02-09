@@ -73,6 +73,12 @@ defmodule EchsServer.Conversations do
     with {:ok, conversation} <- ensure_conversation(conversation_id),
          {:ok, {thread_id, message_content, compacted}} <-
            ensure_thread_for_message(conversation, content),
+         # Ensure event pipeline is alive before starting the turn.
+         # The ConversationEventBuffer may have exited due to its inactivity timeout
+         # since the SSE connection was established. Re-attaching here guarantees
+         # PubSub events from the new turn reach the SSE handler.
+         _ <- ConversationEventBuffer.ensure_started(conversation_id),
+         _ <- ConversationEventBuffer.attach_thread(conversation_id, thread_id),
          {:ok, message_id} <- enqueue_to_thread(thread_id, message_content, opts) do
       if compacted do
         ConversationEventBuffer.emit(conversation_id, :session_compacted, %{

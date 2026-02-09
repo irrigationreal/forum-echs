@@ -18,7 +18,8 @@ defmodule EchsServer.ConversationEventBuffer do
 
   def subscribe(conversation_id, last_event_id \\ nil) do
     {:ok, pid} = do_ensure_started(conversation_id)
-    GenServer.call(pid, {:subscribe, self(), last_event_id})
+    :ok = GenServer.call(pid, {:subscribe, self(), last_event_id})
+    {:ok, pid}
   end
 
   def attach_thread(conversation_id, thread_id) do
