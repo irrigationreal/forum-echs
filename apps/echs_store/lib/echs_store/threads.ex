@@ -7,7 +7,7 @@ defmodule EchsStore.Threads do
 
   @spec upsert_thread(map()) :: {:ok, Thread.t()} | {:error, term()}
   def upsert_thread(attrs) when is_map(attrs) do
-    thread_id = Map.fetch!(attrs, :thread_id)
+    _thread_id = Map.fetch!(attrs, :thread_id)
 
     changes =
       attrs
@@ -33,7 +33,7 @@ defmodule EchsStore.Threads do
       conflict_target: :thread_id
     )
     |> case do
-      {:ok, _} -> {:ok, get_thread!(thread_id)}
+      {:ok, thread} -> {:ok, thread}
       {:error, reason} -> {:error, reason}
     end
   rescue
@@ -56,7 +56,7 @@ defmodule EchsStore.Threads do
         |> Repo.update()
     end
     |> case do
-      {:ok, _} -> {:ok, get_thread!(thread_id)}
+      {:ok, thread} -> {:ok, thread}
       {:error, reason} -> {:error, reason}
     end
   rescue

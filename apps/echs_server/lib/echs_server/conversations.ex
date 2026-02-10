@@ -110,57 +110,24 @@ defmodule EchsServer.Conversations do
 
   def list_history(conversation_id, opts) do
     with {:ok, conversation} <- ensure_conversation(conversation_id) do
-      threads =
-        if store_enabled?() do
-          EchsStore.list_threads_for_conversation(conversation.conversation_id)
-        else
-          []
-        end
-
       redactions? = Keyword.get(opts, :redact?, false)
 
-      items =
-        threads
-        |> Enum.flat_map(fn thread ->
-          case load_history(thread.thread_id, opts) do
-            {:ok, history_items} ->
-              marker = %{
-                "type" => "session_break",
-                "thread_id" => thread.thread_id,
-                "created_at_ms" => thread.created_at_ms
-              }
+      if store_enabled?() do
+        case EchsStore.list_conversation_history(conversation.conversation_id, opts) do
+          {:ok, resp} ->
+            items = maybe_redact_history(resp.items, redactions?)
+            {:ok, %{resp | items: items}}
 
-              if history_items == [] do
-                []
-              else
-                [marker | history_items]
-              end
-
-            {:error, _} ->
-              []
-          end
-        end)
-
-      items = maybe_redact_history(items, redactions?)
-      total = length(items)
-      offset = normalize_offset(Keyword.get(opts, :offset, 0))
-      limit = normalize_limit(Keyword.get(opts, :limit, total), total)
-
-      items =
-        items
-        |> Enum.drop(offset)
-        |> Enum.take(limit)
-
-      {:ok,
-       %{conversation_id: conversation_id, items: items, total: total, limit: limit, offset: offset}}
+          {:error, :not_found} ->
+            # Conversation exists but no history yet.
+            {:ok,
+             %{conversation_id: conversation_id, items: [], total: 0, limit: Keyword.get(opts, :limit, 0), offset: Keyword.get(opts, :offset, 0)}}
+        end
+      else
+        {:ok, %{conversation_id: conversation_id, items: [], total: 0, limit: 0, offset: 0}}
+      end
     end
   end
-
-  defp normalize_offset(value) when is_integer(value) and value >= 0, do: value
-  defp normalize_offset(_), do: 0
-
-  defp normalize_limit(value, _total) when is_integer(value) and value > 0, do: value
-  defp normalize_limit(_value, total), do: total
 
   defp ensure_conversation(conversation_id) do
     if store_enabled?() do
@@ -278,15 +245,9 @@ defmodule EchsServer.Conversations do
     end
   end
 
-  defp load_history(thread_id, opts) do
-    limit = Keyword.get(opts, :limit, 5_000)
-    offset = normalize_offset(Keyword.get(opts, :offset, 0))
-
-    case safe_get_history(thread_id, offset: offset, limit: limit) do
-      {:ok, %{items: items}} -> {:ok, items}
-      {:error, :not_found} -> store_load_history(thread_id)
-    end
-  end
+  # load_history removed: normalize_offset/1 was never defined and this
+  # function was unused (dead code). History loading goes through the
+  # router's safe_get_history or store_load_history directly.
 
   defp store_load_history(thread_id) do
     if store_enabled?() do
@@ -872,13 +833,9 @@ defmodule EchsServer.Conversations do
     end
   end
 
-  defp safe_get_history(thread_id, opts) do
-    try do
-      EchsCore.get_history(thread_id, opts)
-    catch
-      :exit, _ -> {:error, :not_found}
-    end
-  end
+  # safe_get_history removed: was only called from load_history which was
+  # dead code (normalize_offset/1 never existed). The router has its own
+  # safe_get_history.
 
   defp maybe_redact_history(items, false), do: items
 

@@ -8,6 +8,7 @@ defmodule EchsStore do
   """
 
   alias EchsStore.{Conversations, History, Messages, Repo, Threads}
+  alias EchsStore.ConversationHistory
 
   @spec enabled?() :: boolean()
   def enabled? do
@@ -43,4 +44,8 @@ defmodule EchsStore do
   defdelegate get_slice(thread_id, offset, limit), to: History
   defdelegate get_by_message(thread_id, message_id), to: History
   defdelegate load_all(thread_id), to: History
+
+  defdelegate list_conversation_history(conversation_id, opts),
+    to: ConversationHistory,
+    as: :list_history
 end

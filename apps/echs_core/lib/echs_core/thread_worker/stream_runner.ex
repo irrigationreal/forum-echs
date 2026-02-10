@@ -48,27 +48,7 @@ defmodule EchsCore.ThreadWorker.StreamRunner do
         {api_input, api_tools, tool_allowlist} = TWHistory.prepare_api_request(state)
 
         result =
-          if TWConfig.claude_model?(state.model) do
-            EchsClaude.stream_response(
-              model: state.model,
-              instructions: state.instructions,
-              input: api_input,
-              tools: api_tools,
-              tool_allowlist: tool_allowlist,
-              reasoning: state.reasoning,
-              on_event: on_event
-            )
-          else
-            EchsCodex.stream_response(
-              model: state.model,
-              instructions: state.instructions,
-              input: api_input,
-              tools: api_tools,
-              reasoning: state.reasoning,
-              req_opts: codex_req_opts(),
-              on_event: on_event
-            )
-          end
+          call_provider_with_resilience(state, on_event, api_input, api_tools, tool_allowlist)
 
         api_duration_ms = System.monotonic_time(:millisecond) - api_start_ms
         status = if match?({:ok, _}, result), do: :ok, else: :error
@@ -448,6 +428,65 @@ defmodule EchsCore.ThreadWorker.StreamRunner do
     %{
       "type" => "reasoning",
       "summary" => text
+    }
+  end
+
+  # -------------------------------------------------------------------
+  # Provider dispatch with resilience
+  # -------------------------------------------------------------------
+
+  defp call_provider_with_resilience(state, on_event, api_input, api_tools, tool_allowlist) do
+    provider_name = provider_name_for_model(state.model)
+
+    EchsCore.ProviderAdapter.Resilience.with_resilience(provider_name, resilience_opts(), fn ->
+      if TWConfig.claude_model?(state.model) do
+        EchsClaude.stream_response(
+          model: state.model,
+          instructions: state.instructions,
+          input: api_input,
+          tools: api_tools,
+          tool_allowlist: tool_allowlist,
+          reasoning: state.reasoning,
+          on_event: on_event
+        )
+      else
+        EchsCodex.stream_response(
+          model: state.model,
+          instructions: state.instructions,
+          input: api_input,
+          tools: api_tools,
+          reasoning: state.reasoning,
+          req_opts: codex_req_opts(),
+          on_event: on_event
+        )
+      end
+    end)
+  end
+
+  @doc false
+  def provider_name_for_model(model) do
+    case EchsCore.ProviderAdapter.Registry.adapter_for(model) do
+      {:ok, adapter} ->
+        info = adapter.provider_info()
+        String.to_atom(info.name)
+
+      {:error, :no_adapter} ->
+        # Fallback: infer from model name
+        if TWConfig.claude_model?(model), do: :anthropic, else: :openai
+    end
+  end
+
+  @doc false
+  def resilience_opts do
+    %{
+      max_retries: 2,
+      base_delay_ms: 500,
+      max_delay_ms: 15_000,
+      jitter_factor: 0.25,
+      rate_limit: 120,
+      rate_window_ms: 60_000,
+      circuit_breaker_enabled: true,
+      tracing_enabled: true
     }
   end
 

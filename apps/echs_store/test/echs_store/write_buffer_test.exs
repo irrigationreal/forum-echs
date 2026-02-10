@@ -4,7 +4,9 @@ defmodule EchsStore.WriteBufferTest do
   alias EchsStore.WriteBuffer
 
   setup do
-    # Clean up test data
+    # Drain any buffered writes from previous tests so they don't
+    # leak across test boundaries and cause foreign-key failures.
+    _ = WriteBuffer.flush()
     :ok
   end
 
@@ -29,6 +31,21 @@ defmodule EchsStore.WriteBufferTest do
   describe "buffer_message/3" do
     test "accepts message attributes without error" do
       thread_id = "thr_wbtest_#{System.unique_integer([:positive])}"
+
+      # Buffer a thread first so the message won't violate the FK constraint
+      # when the buffer is flushed (either by timer or a subsequent test).
+      WriteBuffer.buffer_thread(%{
+        thread_id: thread_id,
+        model: "test-model",
+        reasoning: "medium",
+        cwd: "/tmp",
+        instructions: "test",
+        tools_json: "[]",
+        coordination_mode: "hierarchical",
+        history_count: 0,
+        created_at_ms: System.system_time(:millisecond),
+        last_activity_at_ms: System.system_time(:millisecond)
+      })
 
       assert :ok =
                WriteBuffer.buffer_message(thread_id, "msg_test_1", %{

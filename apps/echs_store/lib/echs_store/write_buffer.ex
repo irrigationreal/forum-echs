@@ -57,20 +57,23 @@ defmodule EchsStore.WriteBuffer do
   @impl true
   def handle_cast({:thread, attrs}, state) do
     thread_id = Map.fetch!(attrs, :thread_id)
+    new_key? = not Map.has_key?(state.threads, thread_id)
     threads = Map.put(state.threads, thread_id, attrs)
-    state = %{state | threads: threads, count: state.count + 1}
+    state = %{state | threads: threads, count: state.count + if(new_key?, do: 1, else: 0)}
     {:noreply, maybe_flush(state)}
   end
 
   def handle_cast({:message, thread_id, message_id, attrs}, state) do
     key = {thread_id, message_id}
+    new_key? = not Map.has_key?(state.messages, key)
     messages = Map.put(state.messages, key, attrs)
-    state = %{state | messages: messages, count: state.count + 1}
+    state = %{state | messages: messages, count: state.count + if(new_key?, do: 1, else: 0)}
     {:noreply, maybe_flush(state)}
   end
 
   @impl true
   def handle_call(:flush, _from, state) do
+    cancel_timer(state)
     do_flush(state)
     {:reply, :ok, new_state()}
   end
@@ -125,12 +128,18 @@ defmodule EchsStore.WriteBuffer do
     EchsStore.Repo.transaction(fn ->
       # Upsert threads (deduplicated by thread_id)
       Enum.each(threads, fn {_id, attrs} ->
-        EchsStore.Threads.upsert_thread(attrs)
+        case EchsStore.Threads.upsert_thread(attrs) do
+          {:ok, _} -> :ok
+          {:error, reason} -> EchsStore.Repo.rollback({:thread_upsert_failed, reason})
+        end
       end)
 
       # Upsert messages (deduplicated by {thread_id, message_id})
       Enum.each(messages, fn {{thread_id, message_id}, attrs} ->
-        EchsStore.Messages.upsert_message(thread_id, message_id, attrs)
+        case EchsStore.Messages.upsert_message(thread_id, message_id, attrs) do
+          {:ok, _} -> :ok
+          {:error, reason} -> EchsStore.Repo.rollback({:message_upsert_failed, reason})
+        end
       end)
     end)
     |> case do

@@ -25,6 +25,8 @@ defmodule EchsCli.Tui do
   @history_limit 2_000
   @poll_interval_ms 50
   @input_max_height 5
+  @min_render_width 40
+  @min_render_height 12
 
   def main(args \\ []) do
     Logger.configure(level: :warning)
@@ -37,13 +39,20 @@ defmodule EchsCli.Tui do
 
     Application.put_env(:echs_cli, :tui_cwd, cwd)
 
-    Ratatouille.run(__MODULE__,
-      shutdown: :supervisor,
-      quit_events: [
-        {:key, key(:ctrl_c)},
-        {:key, key(:esc)}
-      ]
-    )
+    {:ok, _} = EchsCli.Tui.StdoutGuard.start_link(log_file: "tmp/echs_tui.log")
+    :ok = EchsCli.Tui.StdoutGuard.activate()
+
+    try do
+      Ratatouille.run(__MODULE__,
+        shutdown: :supervisor,
+        quit_events: [
+          {:key, key(:ctrl_c)},
+          {:key, key(:esc)}
+        ]
+      )
+    after
+      EchsCli.Tui.StdoutGuard.deactivate()
+    end
   end
 
   # --- Ratatouille callbacks ---
@@ -116,7 +125,7 @@ defmodule EchsCli.Tui do
   def update(model, {tag, _} = msg) when tag in [
     :turn_started, :turn_completed, :turn_delta, :item_completed,
     :tool_completed, :turn_error, :reasoning_delta, :item_started,
-    :turn_interrupted, :thread_created, :thread_configured,
+    :turn_interrupted, :turn_usage, :thread_created, :thread_configured,
     :thread_terminated, :subagent_spawned, :subagent_down
   ] do
     Events.handle_thread_event(model, msg)
@@ -149,7 +158,9 @@ defmodule EchsCli.Tui do
   end
 
   def update(model, {{:send_message, thread_id}, {:ok, _history}}) do
-    Events.update_thread(model, thread_id, fn thread -> %{thread | status: :idle} end)
+    Events.update_thread(model, thread_id, fn thread ->
+      %{thread | status: :idle, turn_started_at: nil}
+    end)
   end
 
   def update(model, {{:send_message, thread_id}, {:error, error}}) do
@@ -163,6 +174,19 @@ defmodule EchsCli.Tui do
   # --- Render ---
 
   @impl true
+  def render(%{window: %{width: w, height: h}})
+      when w < @min_render_width or h < @min_render_height do
+    view do
+      row do
+        column(size: @grid_total) do
+          panel(title: "Terminal too small", height: :fill) do
+            label(content: "Resize to at least #{@min_render_width}x#{@min_render_height}")
+          end
+        end
+      end
+    end
+  end
+
   def render(model) do
     window = model.window
     {left_width, right_width} = column_widths(window)
@@ -301,7 +325,9 @@ defmodule EchsCli.Tui do
       model =
         model
         |> Events.add_message(thread.id, :user, input)
-        |> Events.update_thread(thread.id, fn t -> %{t | streaming: "", status: :running} end)
+        |> Events.update_thread(thread.id, fn t ->
+          %{t | streaming: "", status: :running, turn_started_at: System.monotonic_time(:millisecond), usage: nil}
+        end)
 
       command = Command.new(fn -> EchsCore.send_message(thread.id, input) end, {:send_message, thread.id})
       {%{model | input: InputBuffer.clear(model.input), command_history: history, history_index: -1}, command}
@@ -456,7 +482,7 @@ defmodule EchsCli.Tui do
           [%Message{role: :tool_call, content: "shell(#{Enum.join(cmd, " ")})", tool_name: "shell", tool_args: Enum.join(cmd, " "), status: :success}]
 
         "function_call_output" ->
-          output = Helpers.truncate(item["output"] || "", 200)
+          output = Helpers.format_tool_output(item["output"] || "")
           call_id = item["call_id"]
           [%Message{role: :tool_result, content: output, call_id: call_id}]
 

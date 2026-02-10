@@ -43,6 +43,7 @@ defmodule EchsCli.Tui.Model do
             scroll: :bottom | non_neg_integer(),
             status: :idle | :running | :error,
             turn_started_at: integer() | nil,
+            usage: map() | nil,
             cache_width: non_neg_integer() | nil,
             cache_lines: list(),
             cache_dirty?: boolean()
@@ -56,6 +57,7 @@ defmodule EchsCli.Tui.Model do
               scroll: :bottom,
               status: :idle,
               turn_started_at: nil,
+              usage: nil,
               cache_width: nil,
               cache_lines: [],
               cache_dirty?: true

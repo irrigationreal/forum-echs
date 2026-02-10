@@ -509,29 +509,9 @@ defmodule EchsCodex.Responses do
     end
   end
 
-  # Extract text from compact response output (list of message items)
-  # Format: [%{"type" => "message", "content" => [%{"type" => "input_text", "text" => "..."}]}]
-  defp extract_compact_output(output) when is_list(output) do
-    output
-    |> Enum.flat_map(fn item ->
-      case item do
-        %{"content" => content} when is_list(content) ->
-          Enum.map(content, fn
-            %{"text" => text} when is_binary(text) -> text
-            _ -> ""
-          end)
-
-        %{"content" => content} when is_binary(content) ->
-          [content]
-
-        _ ->
-          []
-      end
-    end)
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.join("\n\n")
-  end
-
+  # Return compact response output items as-is (list of message items).
+  # Format: [%{"type" => "message", "role" => "assistant", "content" => [...]}]
+  defp extract_compact_output(output) when is_list(output), do: output
   defp extract_compact_output(output) when is_binary(output), do: output
-  defp extract_compact_output(_), do: ""
+  defp extract_compact_output(_), do: []
 end

@@ -56,7 +56,14 @@ defmodule EchsServer.ConversationEventBuffer do
   @impl true
   def init(conversation_id) do
     {:ok,
-     %{conversation_id: conversation_id, seq: 0, events: [], watchers: %{}, threads: MapSet.new()},
+     %{
+       conversation_id: conversation_id,
+       seq: 0,
+       oldest_id: 0,
+       events: [],
+       watchers: %{},
+       threads: MapSet.new()
+     },
      @inactivity_timeout_ms}
   end
 
@@ -73,6 +80,10 @@ defmodule EchsServer.ConversationEventBuffer do
         nil -> []
         _ -> Enum.filter(state.events, fn {id, _type, _data} -> id > last_id end)
       end
+
+    if last_id != nil and last_id < state.oldest_id do
+      send(pid, {:event, 0, :events_gap, %{oldest_available: state.oldest_id, requested_after: last_id}})
+    end
 
     Enum.each(backlog, fn {id, type, data} ->
       send(pid, {:event, id, type, data})
@@ -130,13 +141,17 @@ defmodule EchsServer.ConversationEventBuffer do
   defp push_event(state, event_type, data) do
     id = state.seq + 1
     event = {id, event_type, data}
-    events = trim_events(state.events ++ [event])
+    {events, oldest_id, dropped} = trim_events(state.events ++ [event], state.oldest_id)
+
+    if dropped > 0 do
+      EchsCore.Telemetry.event_buffer_truncated("conversation:" <> state.conversation_id, dropped)
+    end
 
     Enum.each(state.watchers, fn {pid, _ref} ->
       send(pid, {:event, id, event_type, data})
     end)
 
-    {%{state | seq: id, events: events}, id}
+    {%{state | seq: id, events: events, oldest_id: oldest_id}, id}
   end
 
   defp normalize_last_id(nil), do: nil
@@ -152,13 +167,21 @@ defmodule EchsServer.ConversationEventBuffer do
   defp normalize_last_id(value) when is_integer(value), do: value
   defp normalize_last_id(_), do: nil
 
-  defp trim_events(events) do
+  defp trim_events(events, oldest_id) do
     excess = length(events) - @buffer_size
 
     if excess > 0 do
-      Enum.drop(events, excess)
+      trimmed = Enum.drop(events, excess)
+
+      new_oldest =
+        case trimmed do
+          [{id, _, _} | _] -> id
+          [] -> oldest_id
+        end
+
+      {trimmed, new_oldest, excess}
     else
-      events
+      {events, oldest_id, 0}
     end
   end
 end

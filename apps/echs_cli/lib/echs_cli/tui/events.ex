@@ -25,6 +25,7 @@ defmodule EchsCli.Tui.Events do
       {:reasoning_delta, _} = msg -> model |> handle_thread_event(msg) |> drain_pubsub(remaining - 1)
       {:item_started, _} = msg -> model |> handle_thread_event(msg) |> drain_pubsub(remaining - 1)
       {:turn_interrupted, _} = msg -> model |> handle_thread_event(msg) |> drain_pubsub(remaining - 1)
+      {:turn_usage, _} = msg -> model |> handle_thread_event(msg) |> drain_pubsub(remaining - 1)
       {:thread_created, _} = msg -> model |> handle_thread_event(msg) |> drain_pubsub(remaining - 1)
       {:thread_configured, _} = msg -> model |> handle_thread_event(msg) |> drain_pubsub(remaining - 1)
       {:thread_terminated, _} = msg -> model |> handle_thread_event(msg) |> drain_pubsub(remaining - 1)
@@ -104,7 +105,7 @@ defmodule EchsCli.Tui.Events do
         })
 
       "function_call_output" ->
-        output = Helpers.truncate(item["output"] || "", 200)
+        output = Helpers.format_tool_output(item["output"] || "")
         call_id = item["call_id"]
 
         model
@@ -140,6 +141,12 @@ defmodule EchsCli.Tui.Events do
     %{model | info: info}
   end
 
+  def handle_thread_event(model, {:turn_usage, %{thread_id: thread_id, usage: usage}}) do
+    update_thread(model, thread_id, fn thread ->
+      %{thread | usage: usage}
+    end)
+  end
+
   def handle_thread_event(model, {:turn_interrupted, %{thread_id: thread_id}}) do
     update_thread(model, thread_id, fn thread ->
       %{thread | status: :idle, turn_started_at: nil}
@@ -169,6 +176,21 @@ defmodule EchsCli.Tui.Events do
       timestamp: System.monotonic_time(:millisecond)
     })
   end
+
+  def handle_thread_event(model, {:tool_completed, %{thread_id: thread_id, call_id: call_id, result: result}}) do
+    output = Helpers.format_tool_output(result || "")
+
+    model
+    |> update_tool_call_status(thread_id, call_id, :success)
+    |> add_message(thread_id, %Message{
+      role: :tool_result,
+      content: output,
+      call_id: call_id,
+      timestamp: System.monotonic_time(:millisecond)
+    })
+  end
+
+  def handle_thread_event(model, {:tool_completed, _data}), do: model
 
   def handle_thread_event(model, {:item_started, %{item: %{"type" => "function_call", "name" => name}}}) do
     %{model | info: "Calling #{name}..."}

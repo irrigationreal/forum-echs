@@ -50,15 +50,37 @@ defmodule EchsCli.Tui.Helpers do
   Truncate a string to max length, adding "..." if truncated.
   """
   @spec truncate(String.t() | nil, non_neg_integer()) :: String.t()
-  def truncate(value, max_len) do
+  def truncate(value, max_len) when max_len > 3 do
     text = to_string(value || "")
 
     if String.length(text) > max_len do
-      String.slice(text, 0, max_len) <> "..."
+      String.slice(text, 0, max_len - 3) <> "..."
     else
       text
     end
   end
+
+  def truncate(value, _max_len), do: to_string(value || "")
+
+  @doc """
+  Format a tool output string for display. Parses JSON outputs from
+  spawn_agent (agent_id) and error payloads to show them nicely.
+  """
+  @spec format_tool_output(String.t()) :: String.t()
+  def format_tool_output(output) when is_binary(output) do
+    case Jason.decode(output) do
+      {:ok, %{"agent_id" => agent_id}} ->
+        "Agent spawned: #{short_id(agent_id)}"
+
+      {:ok, %{"error" => error}} ->
+        "Error: #{truncate(to_string(error), 200)}"
+
+      _ ->
+        "Result: #{truncate(output, 200)}"
+    end
+  end
+
+  def format_tool_output(output), do: "Result: #{truncate(to_string(output), 200)}"
 
   @doc """
   Shorten a thread ID for display.

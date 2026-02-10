@@ -38,6 +38,7 @@ defmodule EchsCli.Tui.Components.StatusBar do
   def bottom_bar(model) do
     thread = Helpers.active_thread(model)
     elapsed = format_elapsed(thread)
+    usage = format_usage(thread)
     dot = " #{Theme.sym(:separator)} "
 
     bar do
@@ -57,6 +58,7 @@ defmodule EchsCli.Tui.Components.StatusBar do
         text(content: "Esc", color: Theme.keybind_color(), attributes: [:bold])
         text(content: " quit")
         text(content: elapsed, color: Theme.elapsed_color())
+        text(content: usage, color: Theme.usage_color())
       end
     end
   end
@@ -77,4 +79,22 @@ defmodule EchsCli.Tui.Components.StatusBar do
   end
 
   defp format_elapsed(_), do: ""
+
+  defp format_usage(nil), do: ""
+  defp format_usage(%{usage: nil}), do: ""
+  defp format_usage(%{usage: usage}) when is_map(usage) do
+    parts = []
+    parts = if usage["input_tokens"], do: ["in:#{format_tokens(usage["input_tokens"])}" | parts], else: parts
+    parts = if usage["output_tokens"], do: ["out:#{format_tokens(usage["output_tokens"])}" | parts], else: parts
+
+    case parts do
+      [] -> ""
+      _ -> "  [#{Enum.join(Enum.reverse(parts), " ")}]"
+    end
+  end
+  defp format_usage(_), do: ""
+
+  defp format_tokens(n) when is_integer(n) and n >= 1000, do: "#{Float.round(n / 1000, 1)}k"
+  defp format_tokens(n) when is_integer(n), do: "#{n}"
+  defp format_tokens(n), do: "#{n}"
 end

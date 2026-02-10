@@ -30,7 +30,7 @@ defmodule EchsStore.Messages do
       conflict_target: [:thread_id, :message_id]
     )
     |> case do
-      {:ok, _} -> {:ok, get_message!(thread_id, message_id)}
+      {:ok, msg} -> {:ok, msg}
       {:error, reason} -> {:error, reason}
     end
   rescue

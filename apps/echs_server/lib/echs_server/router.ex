@@ -2,13 +2,32 @@ defmodule EchsServer.Router do
   @moduledoc false
 
   use Plug.Router
+  use Plug.ErrorHandler
 
   import Plug.Conn
+
+  require Logger
 
   alias EchsServer.MessageContent
   alias EchsServer.{Conversations, JSON, Models}
   alias EchsStore.{Conversation, Message, Thread}
 
+  @impl Plug.ErrorHandler
+  def handle_errors(conn, %{kind: kind, reason: reason, stack: stack}) do
+    Logger.error(
+      "router error kind=#{inspect(kind)} reason=#{inspect(reason)} stack=#{Exception.format_stacktrace(stack)}"
+    )
+
+    if conn.state in [:sent, :chunked] do
+      conn
+    else
+      conn
+      |> JSON.send_error(500, "internal_error")
+      |> halt()
+    end
+  end
+
+  plug(Plug.RequestId)
   plug(EchsServer.AuthPlug)
 
   plug(:match)
@@ -127,8 +146,8 @@ defmodule EchsServer.Router do
 
   get "/v1/conversations/:conversation_id/history" do
     conn = fetch_query_params(conn)
-    offset = parse_int(conn.query_params["offset"], 0)
-    limit = parse_int(conn.query_params["limit"], 5000)
+    offset = parse_int_bounded(conn.query_params["offset"], 0, 0, 1_000_000)
+    limit = parse_int_bounded(conn.query_params["limit"], 500, 1, 2000)
     redact? = parse_bool(conn.query_params["redact"] || "1")
 
     case Conversations.list_history(conversation_id, offset: offset, limit: limit, redact?: redact?) do
@@ -328,8 +347,8 @@ defmodule EchsServer.Router do
 
   get "/v1/threads/:thread_id/history" do
     conn = fetch_query_params(conn)
-    offset = parse_int(conn.query_params["offset"], 0)
-    limit = parse_int(conn.query_params["limit"], 5000)
+    offset = parse_int_bounded(conn.query_params["offset"], 0, 0, 1_000_000)
+    limit = parse_int_bounded(conn.query_params["limit"], 500, 1, 2000)
     redact? = parse_bool(conn.query_params["redact"] || "1")
 
     case safe_get_history(thread_id, offset: offset, limit: limit) do
@@ -356,7 +375,7 @@ defmodule EchsServer.Router do
 
   get "/v1/threads/:thread_id/messages" do
     conn = fetch_query_params(conn)
-    limit = parse_int(conn.query_params["limit"], 50)
+    limit = parse_int_bounded(conn.query_params["limit"], 50, 1, 500)
 
     case safe_list_messages(thread_id, limit: limit) do
       {:ok, messages} ->
@@ -758,6 +777,14 @@ defmodule EchsServer.Router do
   end
 
   defp parse_int(_other, default), do: default
+
+  defp parse_int_bounded(value, default, min, max)
+       when is_integer(default) and is_integer(min) and is_integer(max) and min <= max do
+    value
+    |> parse_int(default)
+    |> min(max)
+    |> max(min)
+  end
 
   defp validate_id_optional(_field, nil), do: :ok
   defp validate_id_optional(_field, ""), do: :ok

@@ -14,7 +14,7 @@ defmodule EchsCore.ThreadWorker.HistoryManager do
 
   # Compaction constant: max tokens for user messages in compacted history
   # Matches codex COMPACT_USER_MESSAGE_MAX_TOKENS
-  @compact_user_message_max_tokens 20_000
+  # @compact_user_message_max_tokens 20_000
 
   # -------------------------------------------------------------------
   # API request preparation

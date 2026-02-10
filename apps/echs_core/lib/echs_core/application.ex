@@ -5,6 +5,9 @@ defmodule EchsCore.Application do
 
   @impl true
   def start(_type, _args) do
+    # Initialize the ETS table for provider rate limiting before supervision tree starts
+    EchsCore.ProviderAdapter.Resilience.init_rate_table()
+
     children = [
       # Registry must be up before anything that looks up thread pids
       {Registry, keys: :unique, name: EchsCore.Registry},

@@ -47,6 +47,8 @@ defmodule EchsStore.Repo.Migrations.CreateStoreTables do
     create unique_index(:messages, [:thread_id, :message_id])
     create index(:messages, [:thread_id, :status])
     create index(:messages, [:thread_id, :completed_at_ms])
+    create index(:messages, [:thread_id, :enqueued_at_ms])
+    create index(:messages, [:status, :started_at_ms])
 
     create table(:history_items) do
       add :thread_id, references(:threads, column: :thread_id, type: :string, on_delete: :delete_all),
@@ -63,4 +65,3 @@ defmodule EchsStore.Repo.Migrations.CreateStoreTables do
     create index(:history_items, [:thread_id, :message_id])
   end
 end
-

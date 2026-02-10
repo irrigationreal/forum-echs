@@ -153,9 +153,10 @@ defmodule EchsServer.Metrics do
   end
 
   def handle_event([:echs, :tool, :stop], %{duration_ms: duration_ms}, %{tool_name: tool_name}, _config) do
-    increment_counter(:"echs_tool_calls_completed_#{tool_name}")
+    # Keep keys as binaries to avoid atom leaks from user/model-controlled tool names.
+    increment_counter({"echs_tool_calls_completed", tool_name})
     append_histogram(:echs_tool_duration_ms, duration_ms)
-    append_histogram(:"echs_tool_duration_ms_#{tool_name}", duration_ms)
+    append_histogram({"echs_tool_duration_ms", tool_name}, duration_ms)
   end
 
   def handle_event([:echs, :api, :request], %{duration_ms: duration_ms} = measurements, %{status: status}, _config) do
@@ -254,6 +255,24 @@ defmodule EchsServer.Metrics do
     Enum.at(sorted, index, 0)
   end
 
+  defp prom_name({prefix, label}) when is_binary(prefix) do
+    label = sanitize_prom_label(label)
+    prefix <> "_" <> label
+  end
+
   defp prom_name(key) when is_atom(key), do: Atom.to_string(key)
   defp prom_name(key), do: to_string(key)
+
+  defp sanitize_prom_label(value) when is_binary(value) do
+    value
+    |> String.downcase()
+    |> String.replace(~r/[^a-z0-9_]+/u, "_")
+    |> String.trim("_")
+    |> case do
+      "" -> "unknown"
+      s -> String.slice(s, 0, 64)
+    end
+  end
+
+  defp sanitize_prom_label(value), do: sanitize_prom_label(to_string(value))
 end

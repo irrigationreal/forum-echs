@@ -7,7 +7,7 @@ defmodule EchsStore.Conversations do
 
   @spec upsert_conversation(map()) :: {:ok, Conversation.t()} | {:error, term()}
   def upsert_conversation(attrs) when is_map(attrs) do
-    conversation_id = Map.fetch!(attrs, :conversation_id)
+    _conversation_id = Map.fetch!(attrs, :conversation_id)
 
     changes =
       attrs
@@ -31,7 +31,7 @@ defmodule EchsStore.Conversations do
       conflict_target: :conversation_id
     )
     |> case do
-      {:ok, _} -> {:ok, get_conversation!(conversation_id)}
+      {:ok, conversation} -> {:ok, conversation}
       {:error, reason} -> {:error, reason}
     end
   rescue
@@ -69,7 +69,7 @@ defmodule EchsStore.Conversations do
         |> Ecto.Changeset.change(active_thread_id: thread_id, last_activity_at_ms: now_ms())
         |> Repo.update()
         |> case do
-          {:ok, _} -> {:ok, get_conversation!(conversation_id)}
+          {:ok, conversation} -> {:ok, conversation}
           {:error, reason} -> {:error, reason}
         end
     end

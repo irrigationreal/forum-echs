@@ -85,6 +85,7 @@ defmodule EchsCli.Tui.Theme do
   def brand_color, do: color(:cyan)
   def keybind_color, do: color(:cyan)
   def elapsed_color, do: color(:yellow)
+  def usage_color, do: color(:blue)
 
   # --- Input ---
 

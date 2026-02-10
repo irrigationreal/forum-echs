@@ -7,6 +7,8 @@ defmodule EchsServer.Application do
 
   @impl true
   def start(_type, _args) do
+    :ok = EchsServer.validate_auth_configuration!()
+
     children = [
       # Registries must be up before event buffers
       {Registry, keys: :unique, name: EchsServer.ThreadEventRegistry},
